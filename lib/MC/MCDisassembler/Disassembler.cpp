@@ -259,8 +259,9 @@ static void emitLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
 // over by printing a .byte, .long etc. to continue.
 //
 size_t LLVMDisasmInstruction(LLVMDisasmContextRef DCR, uint8_t *Bytes,
-                             uint64_t BytesSize, uint64_t PC, char *OutString,
-                             size_t OutStringSize){
+                             uint64_t BytesSize, uint64_t PC,
+                             LLVMMCInstRef* InstOut,
+                             char *OutString, size_t OutStringSize){
   LLVMDisasmContext *DC = (LLVMDisasmContext *)DCR;
   // Wrap the pointer to the Bytes, BytesSize and PC in a MemoryObject.
   DisasmMemoryObject MemoryObject(Bytes, BytesSize, PC);
@@ -299,6 +300,10 @@ size_t LLVMDisasmInstruction(LLVMDisasmContextRef DCR, uint8_t *Bytes,
     size_t OutputSize = std::min(OutStringSize-1, InsnStr.size());
     std::memcpy(OutString, InsnStr.data(), OutputSize);
     OutString[OutputSize] = '\0'; // Terminate string.
+
+    if (InstOut) {
+      *(MCInst**)InstOut = new MCInst(Inst);
+    }
 
     return Size;
   }

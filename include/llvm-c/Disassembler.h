@@ -18,6 +18,8 @@
 #include "llvm/Support/DataTypes.h"
 #include <stddef.h>
 
+#include "llvm-c/MCInst.h"
+
 /**
  * @defgroup LLVMCDisassembler Disassembler
  * @ingroup LLVMC
@@ -221,12 +223,14 @@ void LLVMDisasmDispose(LLVMDisasmContextRef DC);
  * parameter Bytes, and contains at least BytesSize number of bytes.  The
  * instruction is at the address specified by the PC parameter.  If a valid
  * instruction can be disassembled, its string is returned indirectly in
- * OutString whose size is specified in the parameter OutStringSize.  This
- * function returns the number of bytes in the instruction or zero if there was
- * no valid instruction.
+ * OutString whose size is specified in the parameter OutStringSize.
+ * If a MCInstRef is provided, the MCInst generated during disassembly is
+ * written there. This function returns the number of bytes in the instruction
+ * or zero if there was no valid instruction.
  */
 size_t LLVMDisasmInstruction(LLVMDisasmContextRef DC, uint8_t *Bytes,
                              uint64_t BytesSize, uint64_t PC,
+                             LLVMMCInstRef* Inst,
                              char *OutString, size_t OutStringSize);
 
 /**

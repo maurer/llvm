@@ -45,8 +45,8 @@ static void do_disassemble(const char *triple, unsigned char *buf, int siz) {
 
   pos = 0;
   while (pos < siz) {
-    size_t l = LLVMDisasmInstruction(D, buf + pos, siz - pos, 0, outline,
-                                     sizeof(outline));
+    size_t l = LLVMDisasmInstruction(D, buf + pos, siz - pos, 0, NULL,
+                                     outline, sizeof(outline));
     if (!l) {
       pprint(pos, buf + pos, 1, "\t???");
       pos++;
