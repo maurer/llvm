@@ -2,7 +2,7 @@
 
 ; CHECK-LABEL: test1
 ; CHECK: vcmpleps
-; CHECK: vmovups
+; CHECK: vmovaps
 ; CHECK: ret
 define <16 x float> @test1(<16 x float> %x, <16 x float> %y) nounwind {
   %mask = fcmp ole <16 x float> %x, %y
@@ -12,7 +12,7 @@ define <16 x float> @test1(<16 x float> %x, <16 x float> %y) nounwind {
 
 ; CHECK-LABEL: test2
 ; CHECK: vcmplepd
-; CHECK: vmovupd
+; CHECK: vmovapd
 ; CHECK: ret
 define <8 x double> @test2(<8 x double> %x, <8 x double> %y) nounwind {
   %mask = fcmp ole <8 x double> %x, %y
@@ -22,7 +22,7 @@ define <8 x double> @test2(<8 x double> %x, <8 x double> %y) nounwind {
 
 ; CHECK-LABEL: test3
 ; CHECK: vpcmpeqd  (%rdi)
-; CHECK: vmovdqu32
+; CHECK: vmovdqa32
 ; CHECK: ret
 define <16 x i32> @test3(<16 x i32> %x, <16 x i32> %x1, <16 x i32>* %yp) nounwind {
   %y = load <16 x i32>* %yp, align 4
@@ -33,7 +33,7 @@ define <16 x i32> @test3(<16 x i32> %x, <16 x i32> %x1, <16 x i32>* %yp) nounwin
 
 ; CHECK-LABEL: @test4_unsigned
 ; CHECK: vpcmpnltud
-; CHECK: vmovdqu32
+; CHECK: vmovdqa32
 ; CHECK: ret
 define <16 x i32> @test4_unsigned(<16 x i32> %x, <16 x i32> %y) nounwind {
   %mask = icmp uge <16 x i32> %x, %y
@@ -43,7 +43,7 @@ define <16 x i32> @test4_unsigned(<16 x i32> %x, <16 x i32> %y) nounwind {
 
 ; CHECK-LABEL: test5
 ; CHECK: vpcmpeqq {{.*}}%k1
-; CHECK: vmovdqu64 {{.*}}%k1
+; CHECK: vmovdqa64 {{.*}}%k1
 ; CHECK: ret
 define <8 x i64> @test5(<8 x i64> %x, <8 x i64> %y) nounwind {
   %mask = icmp eq <8 x i64> %x, %y
@@ -53,7 +53,7 @@ define <8 x i64> @test5(<8 x i64> %x, <8 x i64> %y) nounwind {
 
 ; CHECK-LABEL: test6_unsigned
 ; CHECK: vpcmpnleuq {{.*}}%k1
-; CHECK: vmovdqu64 {{.*}}%k1
+; CHECK: vmovdqa64 {{.*}}%k1
 ; CHECK: ret
 define <8 x i64> @test6_unsigned(<8 x i64> %x, <8 x i64> %y) nounwind {
   %mask = icmp ugt <8 x i64> %x, %y
@@ -162,3 +162,151 @@ define <8 x i64> @test15(<8 x i64>%a, <8 x i64>%b) {
   ret <8 x i64>%res
 }
 
+; CHECK-LABEL: @test16
+; CHECK: vpcmpled
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test16(<16 x i32> %x, <16 x i32> %y) nounwind {
+  %mask = icmp sge <16 x i32> %x, %y
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %y
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: @test17
+; CHECK: vpcmpgtd (%rdi)
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test17(<16 x i32> %x, <16 x i32> %x1, <16 x i32>* %y.ptr) nounwind {
+  %y = load <16 x i32>* %y.ptr, align 4
+  %mask = icmp sgt <16 x i32> %x, %y
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %x1
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: @test18
+; CHECK: vpcmpled (%rdi)
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test18(<16 x i32> %x, <16 x i32> %x1, <16 x i32>* %y.ptr) nounwind {
+  %y = load <16 x i32>* %y.ptr, align 4
+  %mask = icmp sle <16 x i32> %x, %y
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %x1
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: @test19
+; CHECK: vpcmpleud (%rdi)
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test19(<16 x i32> %x, <16 x i32> %x1, <16 x i32>* %y.ptr) nounwind {
+  %y = load <16 x i32>* %y.ptr, align 4
+  %mask = icmp ule <16 x i32> %x, %y
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %x1
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: @test20
+; CHECK: vpcmpeqd %zmm{{.*{%k[1-7]}}}
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test20(<16 x i32> %x, <16 x i32> %y, <16 x i32> %x1, <16 x i32> %y1) nounwind {
+  %mask1 = icmp eq <16 x i32> %x1, %y1
+  %mask0 = icmp eq <16 x i32> %x, %y
+  %mask = select <16 x i1> %mask0, <16 x i1> %mask1, <16 x i1> zeroinitializer
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %y
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: @test21
+; CHECK: vpcmpleq %zmm{{.*{%k[1-7]}}}
+; CHECK: vmovdqa64
+; CHECK: ret
+define <8 x i64> @test21(<8 x i64> %x, <8 x i64> %y, <8 x i64> %x1, <8 x i64> %y1) nounwind {
+  %mask1 = icmp sge <8 x i64> %x1, %y1
+  %mask0 = icmp sle <8 x i64> %x, %y
+  %mask = select <8 x i1> %mask0, <8 x i1> %mask1, <8 x i1> zeroinitializer
+  %max = select <8 x i1> %mask, <8 x i64> %x, <8 x i64> %x1
+  ret <8 x i64> %max
+}
+
+; CHECK-LABEL: @test22
+; CHECK: vpcmpgtq (%rdi){{.*{%k[1-7]}}}
+; CHECK: vmovdqa64
+; CHECK: ret
+define <8 x i64> @test22(<8 x i64> %x, <8 x i64>* %y.ptr, <8 x i64> %x1, <8 x i64> %y1) nounwind {
+  %mask1 = icmp sgt <8 x i64> %x1, %y1
+  %y = load <8 x i64>* %y.ptr, align 4
+  %mask0 = icmp sgt <8 x i64> %x, %y
+  %mask = select <8 x i1> %mask0, <8 x i1> %mask1, <8 x i1> zeroinitializer
+  %max = select <8 x i1> %mask, <8 x i64> %x, <8 x i64> %x1
+  ret <8 x i64> %max
+}
+
+; CHECK-LABEL: @test23
+; CHECK: vpcmpleud (%rdi){{.*{%k[1-7]}}}
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test23(<16 x i32> %x, <16 x i32>* %y.ptr, <16 x i32> %x1, <16 x i32> %y1) nounwind {
+  %mask1 = icmp sge <16 x i32> %x1, %y1
+  %y = load <16 x i32>* %y.ptr, align 4
+  %mask0 = icmp ule <16 x i32> %x, %y
+  %mask = select <16 x i1> %mask0, <16 x i1> %mask1, <16 x i1> zeroinitializer
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %x1
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: test24
+; CHECK: vpcmpeqq (%rdi){1to8}
+; CHECK: vmovdqa64
+; CHECK: ret
+define <8 x i64> @test24(<8 x i64> %x, <8 x i64> %x1, i64* %yb.ptr) nounwind {
+  %yb = load i64* %yb.ptr, align 4
+  %y.0 = insertelement <8 x i64> undef, i64 %yb, i32 0
+  %y = shufflevector <8 x i64> %y.0, <8 x i64> undef, <8 x i32> zeroinitializer
+  %mask = icmp eq <8 x i64> %x, %y
+  %max = select <8 x i1> %mask, <8 x i64> %x, <8 x i64> %x1
+  ret <8 x i64> %max
+}
+
+; CHECK-LABEL: test25
+; CHECK: vpcmpled (%rdi){1to16}
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test25(<16 x i32> %x, i32* %yb.ptr, <16 x i32> %x1) nounwind {
+  %yb = load i32* %yb.ptr, align 4
+  %y.0 = insertelement <16 x i32> undef, i32 %yb, i32 0
+  %y = shufflevector <16 x i32> %y.0, <16 x i32> undef, <16 x i32> zeroinitializer
+  %mask = icmp sle <16 x i32> %x, %y
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %x1
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: test26
+; CHECK: vpcmpgtd (%rdi){1to16}{{.*{%k[1-7]}}}
+; CHECK: vmovdqa32
+; CHECK: ret
+define <16 x i32> @test26(<16 x i32> %x, i32* %yb.ptr, <16 x i32> %x1, <16 x i32> %y1) nounwind {
+  %mask1 = icmp sge <16 x i32> %x1, %y1
+  %yb = load i32* %yb.ptr, align 4
+  %y.0 = insertelement <16 x i32> undef, i32 %yb, i32 0
+  %y = shufflevector <16 x i32> %y.0, <16 x i32> undef, <16 x i32> zeroinitializer
+  %mask0 = icmp sgt <16 x i32> %x, %y
+  %mask = select <16 x i1> %mask0, <16 x i1> %mask1, <16 x i1> zeroinitializer
+  %max = select <16 x i1> %mask, <16 x i32> %x, <16 x i32> %x1
+  ret <16 x i32> %max
+}
+
+; CHECK-LABEL: test27
+; CHECK: vpcmpleq (%rdi){1to8}{{.*{%k[1-7]}}}
+; CHECK: vmovdqa64
+; CHECK: ret
+define <8 x i64> @test27(<8 x i64> %x, i64* %yb.ptr, <8 x i64> %x1, <8 x i64> %y1) nounwind {
+  %mask1 = icmp sge <8 x i64> %x1, %y1
+  %yb = load i64* %yb.ptr, align 4
+  %y.0 = insertelement <8 x i64> undef, i64 %yb, i32 0
+  %y = shufflevector <8 x i64> %y.0, <8 x i64> undef, <8 x i32> zeroinitializer
+  %mask0 = icmp sle <8 x i64> %x, %y
+  %mask = select <8 x i1> %mask0, <8 x i1> %mask1, <8 x i1> zeroinitializer
+  %max = select <8 x i1> %mask, <8 x i64> %x, <8 x i64> %x1
+  ret <8 x i64> %max
+}

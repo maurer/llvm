@@ -438,11 +438,15 @@ class LineConsumer {
   StringRef Remaining;
 public:
   LineConsumer(StringRef Filename) {
-    if (std::error_code EC = MemoryBuffer::getFileOrSTDIN(Filename, Buffer)) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> BufferOrErr =
+        MemoryBuffer::getFileOrSTDIN(Filename);
+    if (std::error_code EC = BufferOrErr.getError()) {
       errs() << Filename << ": " << EC.message() << "\n";
       Remaining = "";
-    } else
+    } else {
+      Buffer = std::move(BufferOrErr.get());
       Remaining = Buffer->getBuffer();
+    }
   }
   bool empty() { return Remaining.empty(); }
   void printNext(raw_ostream &OS, uint32_t LineNum) {
@@ -513,11 +517,11 @@ FileInfo::openCoveragePath(StringRef CoveragePath) {
   if (Options.NoOutput)
     return llvm::make_unique<raw_null_ostream>();
 
-  std::string ErrorInfo;
-  auto OS = llvm::make_unique<raw_fd_ostream>(CoveragePath.str().c_str(),
-                                              ErrorInfo, sys::fs::F_Text);
-  if (!ErrorInfo.empty()) {
-    errs() << ErrorInfo << "\n";
+  std::error_code EC;
+  auto OS = llvm::make_unique<raw_fd_ostream>(CoveragePath.str(), EC,
+                                              sys::fs::F_Text);
+  if (EC) {
+    errs() << EC.message() << "\n";
     return llvm::make_unique<raw_null_ostream>();
   }
   return std::move(OS);

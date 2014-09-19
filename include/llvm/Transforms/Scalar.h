@@ -36,6 +36,13 @@ FunctionPass *createConstantPropagationPass();
 
 //===----------------------------------------------------------------------===//
 //
+// AlignmentFromAssumptions - Use assume intrinsics to set load/store
+// alignments.
+//
+FunctionPass *createAlignmentFromAssumptionsPass();
+
+//===----------------------------------------------------------------------===//
+//
 // SCCP - Sparse conditional constant propagation.
 //
 FunctionPass *createSCCPPass();
@@ -285,6 +292,13 @@ extern char &LCSSAID;
 // tree.
 //
 FunctionPass *createEarlyCSEPass();
+
+//===----------------------------------------------------------------------===//
+//
+// MergedLoadStoreMotion - This pass merges loads and stores in diamonds. Loads
+// are hoisted into the header, while stores sink into the footer.
+//
+FunctionPass *createMergedLoadStoreMotionPass();
 
 //===----------------------------------------------------------------------===//
 //

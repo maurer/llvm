@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CODEGEN_ASMPRINTER_DWARFCOMPILEUNIT_H
-#define CODEGEN_ASMPRINTER_DWARFCOMPILEUNIT_H
+#ifndef LLVM_LIB_CODEGEN_ASMPRINTER_DWARFUNIT_H
+#define LLVM_LIB_CODEGEN_ASMPRINTER_DWARFUNIT_H
 
 #include "DIE.h"
 #include "DwarfDebug.h"
@@ -216,9 +216,6 @@ public:
   /// hasContent - Return true if this compile unit has something to write out.
   bool hasContent() const { return !UnitDie.getChildren().empty(); }
 
-  /// addRange - Add an address range to the list of ranges for this unit.
-  void addRange(RangeSpan Range);
-
   /// getRanges - Get the list of ranges for this unit.
   const SmallVectorImpl<RangeSpan> &getRanges() const { return CURanges; }
   SmallVectorImpl<RangeSpan> &getRanges() { return CURanges; }
@@ -275,11 +272,11 @@ public:
   void addSInt(DIELoc &Die, Optional<dwarf::Form> Form, int64_t Integer);
 
   /// addString - Add a string attribute data and value.
-  void addString(DIE &Die, dwarf::Attribute Attribute, const StringRef Str);
+  void addString(DIE &Die, dwarf::Attribute Attribute, StringRef Str);
 
   /// addLocalString - Add a string attribute data and value.
   void addLocalString(DIE &Die, dwarf::Attribute Attribute,
-                      const StringRef Str);
+                      StringRef Str);
 
   /// addExpr - Add a Dwarf expression attribute data and value.
   void addExpr(DIELoc &Die, dwarf::Form Form, const MCExpr *Expr);
@@ -359,7 +356,8 @@ public:
   void addTemplateParams(DIE &Buffer, DIArray TParams);
 
   /// addRegisterOp - Add register operand.
-  void addRegisterOp(DIELoc &TheDie, unsigned Reg);
+  void addRegisterOpPiece(DIELoc &TheDie, unsigned Reg,
+                          unsigned SizeInBits = 0, unsigned OffsetInBits = 0);
 
   /// addRegisterOffset - Add register offset.
   void addRegisterOffset(DIELoc &TheDie, unsigned Reg, int64_t Offset);
@@ -422,7 +420,7 @@ public:
                                             bool Abstract = false);
 
   /// constructSubprogramArguments - Construct function argument DIEs.
-  void constructSubprogramArguments(DIE &Buffer, DIArray Args);
+  void constructSubprogramArguments(DIE &Buffer, DITypeArray Args);
 
   /// Create a DIE with the given Tag, add the DIE to its parent, and
   /// call insertDIE if MD is not null.
@@ -554,6 +552,9 @@ public:
   DwarfCompileUnit &getCU() override { return *this; }
 
   unsigned getOrCreateSourceID(StringRef FileName, StringRef DirName) override;
+
+  /// addRange - Add an address range to the list of ranges for this unit.
+  void addRange(RangeSpan Range);
 };
 
 class DwarfTypeUnit : public DwarfUnit {
@@ -579,6 +580,10 @@ public:
            sizeof(uint32_t);                               // Type DIE Offset
   }
   void initSection(const MCSection *Section);
+  // Bring in the base function (taking two args, including the section symbol)
+  // for use when building DWO type units (they don't go in unique comdat
+  // sections)
+  using DwarfUnit::initSection;
   DwarfCompileUnit &getCU() override { return CU; }
 
 protected:

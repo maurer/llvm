@@ -41,6 +41,14 @@ public:
 
   virtual ~MCELFStreamer();
 
+  /// state management
+  void reset() override {
+    LocalCommons.clear();
+    BindingExplicitlySet.clear();
+    SeenIdent = false;
+    MCObjectStreamer::reset();
+  }
+
   /// @name MCStreamer Interface
   /// @{
 
@@ -48,7 +56,6 @@ public:
   void ChangeSection(const MCSection *Section,
                      const MCExpr *Subsection) override;
   void EmitLabel(MCSymbol *Symbol) override;
-  void EmitDebugLabel(MCSymbol *Symbol) override;
   void EmitAssemblerFlag(MCAssemblerFlag Flag) override;
   void EmitThumbFunc(MCSymbol *Func) override;
   void EmitWeakReference(MCSymbol *Alias, const MCSymbol *Symbol) override;

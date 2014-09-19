@@ -36,11 +36,9 @@ class AMDGPUPromoteAlloca : public FunctionPass,
 public:
   AMDGPUPromoteAlloca(const AMDGPUSubtarget &st) : FunctionPass(ID), ST(st),
                                                    LocalMemAvailable(0) { }
-  virtual bool doInitialization(Module &M);
-  virtual bool runOnFunction(Function &F);
-  virtual const char *getPassName() const {
-    return "AMDGPU Promote Alloca";
-  }
+  bool doInitialization(Module &M) override;
+  bool runOnFunction(Function &F) override;
+  const char *getPassName() const override { return "AMDGPU Promote Alloca"; }
   void visitAlloca(AllocaInst &I);
 };
 
@@ -129,6 +127,22 @@ static Value* GEPToVectorIndex(GetElementPtrInst *GEP) {
   return GEP->getOperand(2);
 }
 
+// Not an instruction handled below to turn into a vector.
+//
+// TODO: Check isTriviallyVectorizable for calls and handle other
+// instructions.
+static bool canVectorizeInst(Instruction *Inst) {
+  switch (Inst->getOpcode()) {
+  case Instruction::Load:
+  case Instruction::Store:
+  case Instruction::BitCast:
+  case Instruction::AddrSpaceCast:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static bool tryPromoteAllocaToVector(AllocaInst *Alloca) {
   Type *AllocaTy = Alloca->getAllocatedType();
 
@@ -149,6 +163,9 @@ static bool tryPromoteAllocaToVector(AllocaInst *Alloca) {
   for (User *AllocaUser : Alloca->users()) {
     GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(AllocaUser);
     if (!GEP) {
+      if (!canVectorizeInst(cast<Instruction>(AllocaUser)))
+        return false;
+
       WorkList.push_back(AllocaUser);
       continue;
     }
@@ -158,20 +175,23 @@ static bool tryPromoteAllocaToVector(AllocaInst *Alloca) {
     // If we can't compute a vector index from this GEP, then we can't
     // promote this alloca to vector.
     if (!Index) {
-      DEBUG(dbgs() << "  Cannot compute vector index for GEP " << *GEP << "\n");
+      DEBUG(dbgs() << "  Cannot compute vector index for GEP " << *GEP << '\n');
       return false;
     }
 
     GEPVectorIdx[GEP] = Index;
     for (User *GEPUser : AllocaUser->users()) {
+      if (!canVectorizeInst(cast<Instruction>(GEPUser)))
+        return false;
+
       WorkList.push_back(GEPUser);
     }
   }
 
   VectorType *VectorTy = arrayTypeToVecType(AllocaTy);
 
-  DEBUG(dbgs() << "  Converting alloca to vector "; AllocaTy->dump();
-        dbgs() << " -> "; VectorTy->dump(); dbgs() << "\n");
+  DEBUG(dbgs() << "  Converting alloca to vector "
+        << *AllocaTy << " -> " << *VectorTy << '\n');
 
   for (std::vector<Value*>::iterator I = WorkList.begin(),
                                      E = WorkList.end(); I != E; ++I) {
@@ -201,12 +221,12 @@ static bool tryPromoteAllocaToVector(AllocaInst *Alloca) {
       break;
     }
     case Instruction::BitCast:
+    case Instruction::AddrSpaceCast:
       break;
 
     default:
       Inst->dump();
-      llvm_unreachable("Do not know how to replace this instruction "
-                              "with vector op");
+      llvm_unreachable("Inconsistency in instructions promotable to vector");
     }
   }
   return true;
@@ -233,7 +253,7 @@ void AMDGPUPromoteAlloca::visitAlloca(AllocaInst &I) {
   // First try to replace the alloca with a vector
   Type *AllocaTy = I.getAllocatedType();
 
-  DEBUG(dbgs() << "Trying to promote " << I);
+  DEBUG(dbgs() << "Trying to promote " << I << '\n');
 
   if (tryPromoteAllocaToVector(&I))
     return;
@@ -309,6 +329,13 @@ void AMDGPUPromoteAlloca::visitAlloca(AllocaInst &I) {
     if (!Call) {
       Type *EltTy = V->getType()->getPointerElementType();
       PointerType *NewTy = PointerType::get(EltTy, AMDGPUAS::LOCAL_ADDRESS);
+
+      // The operand's value should be corrected on its own.
+      if (isa<AddrSpaceCastInst>(V))
+        continue;
+
+      // FIXME: It doesn't really make sense to try to do this for all
+      // instructions.
       V->mutateType(NewTy);
       continue;
     }

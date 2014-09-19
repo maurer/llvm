@@ -15,12 +15,12 @@
 #include "AArch64Subtarget.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "Utils/AArch64BaseInfo.h"
-#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCFixedLenDisassembler.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryObject.h"
 #include "llvm/Support/TargetRegistry.h"
-#include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
@@ -243,13 +243,9 @@ extern "C" void LLVMInitializeAArch64Disassembler() {
   TargetRegistry::RegisterMCSymbolizer(TheAArch64beTarget,
                                        createAArch64ExternalSymbolizer);
 
-  TargetRegistry::RegisterMCDisassembler(TheARM64leTarget,
+  TargetRegistry::RegisterMCDisassembler(TheARM64Target,
                                          createAArch64Disassembler);
-  TargetRegistry::RegisterMCDisassembler(TheARM64beTarget,
-                                         createAArch64Disassembler);
-  TargetRegistry::RegisterMCSymbolizer(TheARM64leTarget,
-                                       createAArch64ExternalSymbolizer);
-  TargetRegistry::RegisterMCSymbolizer(TheARM64beTarget,
+  TargetRegistry::RegisterMCSymbolizer(TheARM64Target,
                                        createAArch64ExternalSymbolizer);
 }
 
@@ -614,7 +610,7 @@ static DecodeStatus DecodePCRelLabel19(llvm::MCInst &Inst, unsigned Imm,
   if (ImmVal & (1 << (19 - 1)))
     ImmVal |= ~((1LL << 19) - 1);
 
-  if (!Dis->tryAddingSymbolicOperand(Inst, ImmVal << 2, Addr,
+  if (!Dis->tryAddingSymbolicOperand(Inst, ImmVal *  4, Addr,
                                      Inst.getOpcode() != AArch64::LDRXl, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(ImmVal));
   return Success;
@@ -1510,7 +1506,7 @@ static DecodeStatus DecodeUnconditionalBranch(llvm::MCInst &Inst, uint32_t insn,
   if (imm & (1 << (26 - 1)))
     imm |= ~((1LL << 26) - 1);
 
-  if (!Dis->tryAddingSymbolicOperand(Inst, imm << 2, Addr, true, 0, 4))
+  if (!Dis->tryAddingSymbolicOperand(Inst, imm * 4, Addr, true, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(imm));
 
   return Success;
@@ -1552,7 +1548,7 @@ static DecodeStatus DecodeTestAndBranch(llvm::MCInst &Inst, uint32_t insn,
   else
     DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
   Inst.addOperand(MCOperand::CreateImm(bit));
-  if (!Dis->tryAddingSymbolicOperand(Inst, dst << 2, Addr, true, 0, 4))
+  if (!Dis->tryAddingSymbolicOperand(Inst, dst * 4, Addr, true, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(dst));
 
   return Success;

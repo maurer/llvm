@@ -50,12 +50,11 @@ static cl::opt<bool> UseTBAA("use-tbaa-in-sched-mi", cl::Hidden,
     cl::init(true), cl::desc("Enable use of TBAA during MI GAD construction"));
 
 ScheduleDAGInstrs::ScheduleDAGInstrs(MachineFunction &mf,
-                                     const MachineLoopInfo &mli,
-                                     const MachineDominatorTree &mdt,
+                                     const MachineLoopInfo *mli,
                                      bool IsPostRAFlag,
                                      bool RemoveKillFlags,
                                      LiveIntervals *lis)
-  : ScheduleDAG(mf), MLI(mli), MDT(mdt), MFI(mf.getFrameInfo()), LIS(lis),
+  : ScheduleDAG(mf), MLI(mli), MFI(mf.getFrameInfo()), LIS(lis),
     IsPostRA(IsPostRAFlag), RemoveKillFlags(RemoveKillFlags),
     CanHandleTerminators(false), FirstDbgValue(nullptr) {
   assert((IsPostRA || LIS) && "PreRA scheduling requires LiveIntervals");
@@ -64,7 +63,7 @@ ScheduleDAGInstrs::ScheduleDAGInstrs(MachineFunction &mf,
          "Virtual registers must be removed prior to PostRA scheduling");
 
   const TargetSubtargetInfo &ST = TM.getSubtarget<TargetSubtargetInfo>();
-  SchedModel.init(*ST.getSchedModel(), &ST, TII);
+  SchedModel.init(ST.getSchedModel(), &ST, TII);
 }
 
 /// getUnderlyingObjectFromInt - This is the function that does the work of
@@ -512,9 +511,18 @@ static inline bool isUnsafeMemoryObject(MachineInstr *MI,
 static bool MIsNeedChainEdge(AliasAnalysis *AA, const MachineFrameInfo *MFI,
                              MachineInstr *MIa,
                              MachineInstr *MIb) {
+  const MachineFunction *MF = MIa->getParent()->getParent();
+  const TargetInstrInfo *TII = MF->getSubtarget().getInstrInfo();
+
   // Cover a trivial case - no edge is need to itself.
   if (MIa == MIb)
     return false;
+ 
+  // Let the target decide if memory accesses cannot possibly overlap.
+  if ((MIa->mayLoad() || MIa->mayStore()) &&
+      (MIb->mayLoad() || MIb->mayStore()))
+    if (TII->areMemAccessesTriviallyDisjoint(MIa, MIb, AA))
+      return false;
 
   // FIXME: Need to handle multiple memory operands to support all targets.
   if (!MIa->hasOneMemOperand() || !MIb->hasOneMemOperand())
@@ -563,9 +571,9 @@ static bool MIsNeedChainEdge(AliasAnalysis *AA, const MachineFrameInfo *MFI,
 
   AliasAnalysis::AliasResult AAResult = AA->alias(
       AliasAnalysis::Location(MMOa->getValue(), Overlapa,
-                              UseTBAA ? MMOa->getTBAAInfo() : nullptr),
+                              UseTBAA ? MMOa->getAAInfo() : AAMDNodes()),
       AliasAnalysis::Location(MMOb->getValue(), Overlapb,
-                              UseTBAA ? MMOb->getTBAAInfo() : nullptr));
+                              UseTBAA ? MMOb->getAAInfo() : AAMDNodes()));
 
   return (AAResult != AliasAnalysis::NoAlias);
 }
@@ -575,7 +583,7 @@ static bool MIsNeedChainEdge(AliasAnalysis *AA, const MachineFrameInfo *MFI,
 static unsigned
 iterateChainSucc(AliasAnalysis *AA, const MachineFrameInfo *MFI,
                  SUnit *SUa, SUnit *SUb, SUnit *ExitSU, unsigned *Depth,
-                 SmallPtrSet<const SUnit*, 16> &Visited) {
+                 SmallPtrSetImpl<const SUnit*> &Visited) {
   if (!SUa || !SUb || SUb == ExitSU)
     return *Depth;
 
@@ -656,7 +664,7 @@ void addChainDependency (AliasAnalysis *AA, const MachineFrameInfo *MFI,
                          bool isNormalMemory = false) {
   // If this is a false dependency,
   // do not add the edge, but rememeber the rejected node.
-  if (!AA || MIsNeedChainEdge(AA, MFI, SUa->getInstr(), SUb->getInstr())) {
+  if (MIsNeedChainEdge(AA, MFI, SUa->getInstr(), SUb->getInstr())) {
     SDep Dep(SUa, isNormalMemory ? SDep::MayAliasMem : SDep::Barrier);
     Dep.setLatency(TrueMemOrderLatency);
     SUb->addPred(Dep);
@@ -1508,7 +1516,7 @@ void SchedDFSResult::scheduleTree(unsigned SubtreeID) {
   }
 }
 
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+LLVM_DUMP_METHOD
 void ILPValue::print(raw_ostream &OS) const {
   OS << InstrCount << " / " << Length << " = ";
   if (!Length)
@@ -1517,16 +1525,17 @@ void ILPValue::print(raw_ostream &OS) const {
     OS << format("%g", ((double)InstrCount / Length));
 }
 
+LLVM_DUMP_METHOD
 void ILPValue::dump() const {
   dbgs() << *this << '\n';
 }
 
 namespace llvm {
 
+LLVM_DUMP_METHOD
 raw_ostream &operator<<(raw_ostream &OS, const ILPValue &Val) {
   Val.print(OS);
   return OS;
 }
 
 } // namespace llvm
-#endif // !NDEBUG || LLVM_ENABLE_DUMP

@@ -250,7 +250,7 @@ protected:
 public:
   ScheduleDAGMI(MachineSchedContext *C, std::unique_ptr<MachineSchedStrategy> S,
                 bool IsPostRA)
-      : ScheduleDAGInstrs(*C->MF, *C->MLI, *C->MDT, IsPostRA,
+      : ScheduleDAGInstrs(*C->MF, C->MLI, IsPostRA,
                           /*RemoveKillFlags=*/IsPostRA, C->LIS),
         AA(C->AA), SchedImpl(std::move(S)), Topo(SUnits, &ExitSU), CurrentTop(),
         CurrentBottom(), NextClusterPred(nullptr), NextClusterSucc(nullptr) {
@@ -518,9 +518,7 @@ public:
     return Queue.begin() + idx;
   }
 
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   void dump();
-#endif
 };
 
 /// Summarize the unscheduled region.

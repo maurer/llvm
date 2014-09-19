@@ -39,7 +39,7 @@ MCAsmInfo::MCAsmInfo() {
   SeparatorString = ";";
   CommentString = "#";
   LabelSuffix = ":";
-  DebugLabelSuffix = ":";
+  UseAssignmentForEHBegin = false;
   PrivateGlobalPrefix = "L";
   LinkerPrivateGlobalPrefix = "";
   InlineAsmStart = "APP";
@@ -79,10 +79,9 @@ MCAsmInfo::MCAsmInfo() {
   HiddenVisibilityAttr = MCSA_Hidden;
   HiddenDeclarationVisibilityAttr = MCSA_Hidden;
   ProtectedVisibilityAttr = MCSA_Protected;
-  HasLEB128 = false;
   SupportsDebugInformation = false;
   ExceptionsType = ExceptionHandling::None;
-  WinEHEncodingType = WinEH::EncodingType::ET_Invalid;
+  WinEHEncodingType = WinEH::EncodingType::Invalid;
   DwarfUsesRelocationsAcrossSections = true;
   DwarfFDESymbolsUseAbsDiff = false;
   DwarfRegNumForCFI = false;

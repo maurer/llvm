@@ -87,6 +87,9 @@ public:
   /// requested stack size).
   ///
   /// See RunSafely() and llvm_execute_on_thread().
+  ///
+  /// On Darwin, if PRIO_DARWIN_BG is set on the calling thread, it will be
+  /// propagated to the new thread as well.
   bool RunSafelyOnThread(function_ref<void()>, unsigned RequestedStackSize = 0);
   bool RunSafelyOnThread(void (*Fn)(void*), void *UserData,
                          unsigned RequestedStackSize = 0) {
@@ -163,9 +166,7 @@ public:
     : CrashRecoveryContextCleanupBase<
         CrashRecoveryContextDeleteCleanup<T>, T>(context, resource) {}
 
-  virtual void recoverResources() {
-    delete this->resource;
-  }  
+  void recoverResources() override { delete this->resource; }
 };
 
 template <typename T>
@@ -178,9 +179,7 @@ public:
     : CrashRecoveryContextCleanupBase<CrashRecoveryContextReleaseRefCleanup<T>,
           T>(context, resource) {}
 
-  virtual void recoverResources() {
-    this->resource->Release();
-  }
+  void recoverResources() override { this->resource->Release(); }
 };
 
 template <typename T, typename Cleanup = CrashRecoveryContextDeleteCleanup<T> >

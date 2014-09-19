@@ -24,6 +24,8 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LeakDetector.h"
 #include "llvm/Support/Dwarf.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/RandomNumberGenerator.h"
 #include <algorithm>
 #include <cstdarg>
 #include <cstdlib>
@@ -44,7 +46,7 @@ template class llvm::SymbolTableListTraits<GlobalAlias, Module>;
 //
 
 Module::Module(StringRef MID, LLVMContext &C)
-    : Context(C), Materializer(), ModuleID(MID), DL("") {
+    : Context(C), Materializer(), ModuleID(MID), RNG(nullptr), DL("") {
   ValSymTab = new ValueSymbolTable();
   NamedMDSymTab = new StringMap<NamedMDNode *>();
   Context.addModule(this);
@@ -59,6 +61,7 @@ Module::~Module() {
   NamedMDList.clear();
   delete ValSymTab;
   delete static_cast<StringMap<NamedMDNode *> *>(NamedMDSymTab);
+  delete RNG;
 }
 
 /// getNamedValue - Return the first global value in the module with
@@ -256,6 +259,17 @@ void Module::eraseNamedMetadata(NamedMDNode *NMD) {
   NamedMDList.erase(NMD);
 }
 
+bool Module::isValidModFlagBehavior(Value *V, ModFlagBehavior &MFB) {
+  if (ConstantInt *Behavior = dyn_cast<ConstantInt>(V)) {
+    uint64_t Val = Behavior->getLimitedValue();
+    if (Val >= ModFlagBehaviorFirstVal && Val <= ModFlagBehaviorLastVal) {
+      MFB = static_cast<ModFlagBehavior>(Val);
+      return true;
+    }
+  }
+  return false;
+}
+
 /// getModuleFlagsMetadata - Returns the module flags in the provided vector.
 void Module::
 getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry> &Flags) const {
@@ -263,15 +277,15 @@ getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry> &Flags) const {
   if (!ModFlags) return;
 
   for (const MDNode *Flag : ModFlags->operands()) {
-    if (Flag->getNumOperands() >= 3 && isa<ConstantInt>(Flag->getOperand(0)) &&
+    ModFlagBehavior MFB;
+    if (Flag->getNumOperands() >= 3 &&
+        isValidModFlagBehavior(Flag->getOperand(0), MFB) &&
         isa<MDString>(Flag->getOperand(1))) {
       // Check the operands of the MDNode before accessing the operands.
       // The verifier will actually catch these failures.
-      ConstantInt *Behavior = cast<ConstantInt>(Flag->getOperand(0));
       MDString *Key = cast<MDString>(Flag->getOperand(1));
       Value *Val = Flag->getOperand(2);
-      Flags.push_back(ModuleFlagEntry(ModFlagBehavior(Behavior->getZExtValue()),
-                                      Key, Val));
+      Flags.push_back(ModuleFlagEntry(MFB, Key, Val));
     }
   }
 }
@@ -355,6 +369,16 @@ const DataLayout *Module::getDataLayout() const {
   return &DL;
 }
 
+// We want reproducible builds, but ModuleID may be a full path so we just use
+// the filename to salt the RNG (although it is not guaranteed to be unique).
+RandomNumberGenerator &Module::getRNG() const {
+  if (RNG == nullptr) {
+    StringRef Salt = sys::path::filename(ModuleID);
+    RNG = new RandomNumberGenerator(Salt);
+  }
+  return *RNG;
+}
+
 //===----------------------------------------------------------------------===//
 // Methods to control the materialization of GlobalValues in the Module.
 //
@@ -421,14 +445,14 @@ std::error_code Module::materializeAllPermanently() {
 // has "dropped all references", except operator delete.
 //
 void Module::dropAllReferences() {
-  for(Module::iterator I = begin(), E = end(); I != E; ++I)
-    I->dropAllReferences();
+  for (Function &F : *this)
+    F.dropAllReferences();
 
-  for(Module::global_iterator I = global_begin(), E = global_end(); I != E; ++I)
-    I->dropAllReferences();
+  for (GlobalVariable &GV : globals())
+    GV.dropAllReferences();
 
-  for(Module::alias_iterator I = alias_begin(), E = alias_end(); I != E; ++I)
-    I->dropAllReferences();
+  for (GlobalAlias &GA : aliases())
+    GA.dropAllReferences();
 }
 
 unsigned Module::getDwarfVersion() const {
@@ -436,4 +460,12 @@ unsigned Module::getDwarfVersion() const {
   if (!Val)
     return dwarf::DWARF_VERSION;
   return cast<ConstantInt>(Val)->getZExtValue();
+}
+
+Comdat *Module::getOrInsertComdat(StringRef Name) {
+  Comdat C;
+  StringMapEntry<Comdat> &Entry =
+      ComdatSymTab.GetOrCreateValue(Name, std::move(C));
+  Entry.second.Name = &Entry;
+  return &Entry.second;
 }

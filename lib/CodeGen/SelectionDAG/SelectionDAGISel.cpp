@@ -411,9 +411,9 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
          "-fast-isel-abort requires -fast-isel");
 
   const Function &Fn = *mf.getFunction();
-  const TargetInstrInfo &TII = *TM.getInstrInfo();
-  const TargetRegisterInfo &TRI = *TM.getRegisterInfo();
-  const TargetLowering *TLI = TM.getTargetLowering();
+  const TargetInstrInfo &TII = *TM.getSubtargetImpl()->getInstrInfo();
+  const TargetRegisterInfo &TRI = *TM.getSubtargetImpl()->getRegisterInfo();
+  const TargetLowering *TLI = TM.getSubtargetImpl()->getTargetLowering();
 
   MF = &mf;
   RegInfo = &MF->getRegInfo();
@@ -421,9 +421,6 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
   LibInfo = &getAnalysis<TargetLibraryInfo>();
   GFI = Fn.hasGC() ? &getAnalysis<GCModuleInfo>().getFunctionInfo(Fn) : nullptr;
 
-  TargetSubtargetInfo &ST =
-    const_cast<TargetSubtargetInfo&>(TM.getSubtarget<TargetSubtargetInfo>());
-  ST.resetSubtargetFeatures(MF);
   TM.resetTargetOptions(MF);
 
   // Reset OptLevel to None for optnone functions.
@@ -534,7 +531,8 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
       break;
 
     for (const auto &MI : MBB) {
-      const MCInstrDesc &MCID = TM.getInstrInfo()->get(MI.getOpcode());
+      const MCInstrDesc &MCID =
+          TM.getSubtargetImpl()->getInstrInfo()->get(MI.getOpcode());
       if ((MCID.isCall() && !MCID.isReturn()) ||
           MI.isStackAligningInlineAsm()) {
         MFI->setHasCalls(true);
@@ -901,7 +899,8 @@ void SelectionDAGISel::PrepareEHLandingPad() {
   // Assign the call site to the landing pad's begin label.
   MF->getMMI().setCallSiteLandingPad(Label, SDB->LPadToCallSiteMap[MBB]);
 
-  const MCInstrDesc &II = TM.getInstrInfo()->get(TargetOpcode::EH_LABEL);
+  const MCInstrDesc &II =
+      TM.getSubtargetImpl()->getInstrInfo()->get(TargetOpcode::EH_LABEL);
   BuildMI(*MBB, FuncInfo->InsertPt, SDB->getCurDebugLoc(), II)
     .addSym(Label);
 
@@ -1096,7 +1095,7 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
         ++NumEntryBlocks;
 
         // Lower any arguments needed in this block if this is the entry block.
-        if (!FastIS->LowerArguments()) {
+        if (!FastIS->lowerArguments()) {
           // Fast isel failed to lower these arguments
           ++NumFastIselFailLowerArguments;
           if (EnableFastISelAbortArgs)
@@ -1134,7 +1133,7 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
         FastIS->recomputeInsertPt();
 
         // Try to select the instruction with FastISel.
-        if (FastIS->SelectInstruction(Inst)) {
+        if (FastIS->selectInstruction(Inst)) {
           --NumFastIselRemaining;
           ++NumFastIselSuccess;
           // If fast isel succeeded, skip over all the folded instructions, and
@@ -1729,7 +1728,7 @@ static SDNode *findGlueUse(SDNode *N) {
 /// This function recursively traverses up the operand chain, ignoring
 /// certain nodes.
 static bool findNonImmUse(SDNode *Use, SDNode* Def, SDNode *ImmedUse,
-                          SDNode *Root, SmallPtrSet<SDNode*, 16> &Visited,
+                          SDNode *Root, SmallPtrSetImpl<SDNode*> &Visited,
                           bool IgnoreChains) {
   // The NodeID's are given uniques ID's where a node ID is guaranteed to be
   // greater than all of its (recursive) operands.  If we scan to a point where
@@ -2449,8 +2448,6 @@ SelectCodeCommon(SDNode *NodeToMatch, const unsigned char *MatcherTable,
   case ISD::BasicBlock:
   case ISD::Register:
   case ISD::RegisterMask:
-  //case ISD::VALUETYPE:
-  //case ISD::CONDCODE:
   case ISD::HANDLENODE:
   case ISD::MDNODE_SDNODE:
   case ISD::TargetConstant:
@@ -3076,7 +3073,8 @@ SelectCodeCommon(SDNode *NodeToMatch, const unsigned char *MatcherTable,
       if (EmitNodeInfo & OPFL_MemRefs) {
         // Only attach load or store memory operands if the generated
         // instruction may load or store.
-        const MCInstrDesc &MCID = TM.getInstrInfo()->get(TargetOpc);
+        const MCInstrDesc &MCID =
+            TM.getSubtargetImpl()->getInstrInfo()->get(TargetOpc);
         bool mayLoad = MCID.mayLoad();
         bool mayStore = MCID.mayStore();
 

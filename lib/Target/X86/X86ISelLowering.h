@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef X86ISELLOWERING_H
-#define X86ISELLOWERING_H
+#ifndef LLVM_LIB_TARGET_X86_X86ISELLOWERING_H
+#define LLVM_LIB_TARGET_X86_X86ISELLOWERING_H
 
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/SelectionDAG.h"
@@ -85,6 +85,9 @@ namespace llvm {
 
       /// X86 Read Time-Stamp Counter and Processor ID.
       RDTSCP_DAG,
+
+      /// X86 Read Performance Monitoring Counters.
+      RDPMC_DAG,
 
       /// X86 compare and logical compare instructions.
       CMP, COMI, UCOMI,
@@ -189,6 +192,9 @@ namespace llvm {
 
       /// BLENDI - Blend where the selector is an immediate.
       BLENDI,
+
+      /// ADDSUB - Combined add and sub on an FP vector.
+      ADDSUB,
 
       // SUBUS - Integer sub with unsigned saturation.
       SUBUS,
@@ -315,7 +321,12 @@ namespace llvm {
       KORTEST,
 
       // Several flavors of instructions with vector shuffle behaviors.
+      PACKSS,
+      PACKUS,
+      // Intra-lane alignr
       PALIGNR,
+      // AVX512 inter-lane alignr
+      VALIGN,
       PSHUFD,
       PSHUFHW,
       PSHUFLW,
@@ -400,23 +411,8 @@ namespace llvm {
       // XTEST - Test if in transactional execution.
       XTEST,
 
-      // ATOMADD64_DAG, ATOMSUB64_DAG, ATOMOR64_DAG, ATOMAND64_DAG,
-      // ATOMXOR64_DAG, ATOMNAND64_DAG, ATOMSWAP64_DAG -
-      // Atomic 64-bit binary operations.
-      ATOMADD64_DAG = ISD::FIRST_TARGET_MEMORY_OPCODE,
-      ATOMSUB64_DAG,
-      ATOMOR64_DAG,
-      ATOMXOR64_DAG,
-      ATOMAND64_DAG,
-      ATOMNAND64_DAG,
-      ATOMMAX64_DAG,
-      ATOMMIN64_DAG,
-      ATOMUMAX64_DAG,
-      ATOMUMIN64_DAG,
-      ATOMSWAP64_DAG,
-
       // LCMPXCHG_DAG, LCMPXCHG8_DAG, LCMPXCHG16_DAG - Compare and swap.
-      LCMPXCHG_DAG,
+      LCMPXCHG_DAG = ISD::FIRST_TARGET_MEMORY_OPCODE,
       LCMPXCHG8_DAG,
       LCMPXCHG16_DAG,
 
@@ -521,6 +517,16 @@ namespace llvm {
     /// own arguments. Callee pop is necessary to support tail calls.
     bool isCalleePop(CallingConv::ID CallingConv,
                      bool is64Bit, bool IsVarArg, bool TailCallOpt);
+
+    /// AVX512 static rounding constants.  These need to match the values in
+    /// avx512fintrin.h.
+    enum STATIC_ROUNDING {
+      TO_NEAREST_INT = 0,
+      TO_NEG_INF = 1,
+      TO_POS_INF = 2,
+      TO_ZERO = 3,
+      CUR_DIRECTION = 4
+    };
   }
 
   //===--------------------------------------------------------------------===//
@@ -575,10 +581,10 @@ namespace llvm {
     /// legal as the hook is used before type legalization.
     bool isSafeMemOpType(MVT VT) const override;
 
-    /// allowsUnalignedMemoryAccesses - Returns true if the target allows
+    /// allowsMisalignedMemoryAccesses - Returns true if the target allows
     /// unaligned memory accesses. of the specified type. Returns whether it
     /// is "fast" by reference in the second argument.
-    bool allowsUnalignedMemoryAccesses(EVT VT, unsigned AS,
+    bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AS, unsigned Align,
                                        bool *Fast) const override;
 
     /// LowerOperation - Provide custom lowering hooks for some operations.
@@ -806,6 +812,10 @@ namespace llvm {
     /// \brief Reset the operation actions based on target options.
     void resetOperationActions() override;
 
+    bool useLoadStackGuardNode() const override;
+    /// \brief Customize the preferred legalization strategy for certain types.
+    LegalizeTypeAction getPreferredVectorAction(EVT VT) const override;
+
   protected:
     std::pair<const TargetRegisterClass*, uint8_t>
     findRepresentativeClass(MVT VT) const override;
@@ -943,7 +953,7 @@ namespace llvm {
 
     bool mayBeEmittedAsTailCall(CallInst *CI) const override;
 
-    MVT getTypeForExtArgOrReturn(MVT VT,
+    EVT getTypeForExtArgOrReturn(LLVMContext &Context, EVT VT,
                                  ISD::NodeType ExtendKind) const override;
 
     bool CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
@@ -952,6 +962,12 @@ namespace llvm {
                         LLVMContext &Context) const override;
 
     const MCPhysReg *getScratchRegisters(CallingConv::ID CC) const override;
+
+    bool shouldExpandAtomicLoadInIR(LoadInst *SI) const override;
+    bool shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
+    bool shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
+
+    bool needsCmpXchgNb(const Type *MemType) const;
 
     /// Utility function to emit atomic-load-arith operations (and, or, xor,
     /// nand, max, min, umax, umin). It takes the corresponding instruction to

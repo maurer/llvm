@@ -104,7 +104,15 @@ def FeatureCDI      : SubtargetFeature<"avx512cd", "HasCDI", "true",
 def FeaturePFI      : SubtargetFeature<"avx512pf", "HasPFI", "true",
                       "Enable AVX-512 PreFetch Instructions",
                                       [FeatureAVX512]>;
-
+def FeatureDQI     : SubtargetFeature<"avx512dq", "HasDQI", "true",
+                      "Enable AVX-512 Doubleword and Quadword Instructions",
+                                      [FeatureAVX512]>;
+def FeatureBWI     : SubtargetFeature<"avx512bw", "HasBWI", "true",
+                      "Enable AVX-512 Byte and Word Instructions",
+                                      [FeatureAVX512]>;
+def FeatureVLX     : SubtargetFeature<"avx512vl", "HasVLX", "true",
+                      "Enable AVX-512 Vector Length eXtensions",
+                                      [FeatureAVX512]>;
 def FeaturePCLMUL  : SubtargetFeature<"pclmul", "HasPCLMUL", "true",
                          "Enable packed carry-less multiplication instructions",
                                [FeatureSSE2]>;
@@ -149,10 +157,14 @@ def FeatureADX     : SubtargetFeature<"adx", "HasADX", "true",
 def FeatureSHA     : SubtargetFeature<"sha", "HasSHA", "true",
                                       "Enable SHA instructions",
                                       [FeatureSSE2]>;
+def FeatureSGX     : SubtargetFeature<"sgx", "HasSGX", "true",
+                                      "Support SGX instructions">;
 def FeaturePRFCHW  : SubtargetFeature<"prfchw", "HasPRFCHW", "true",
                                       "Support PRFCHW instructions">;
 def FeatureRDSEED  : SubtargetFeature<"rdseed", "HasRDSEED", "true",
                                       "Support RDSEED instruction">;
+def FeatureSMAP    : SubtargetFeature<"smap", "HasSMAP", "true",
+                                      "Support SMAP instructions">;
 def FeatureLeaForSP : SubtargetFeature<"lea-sp", "UseLeaForSP", "true",
                                      "Use LEA for adjusting the stack pointer">;
 def FeatureSlowDivide : SubtargetFeature<"idiv-to-divb",
@@ -266,6 +278,13 @@ def : ProcessorModel<"core-avx2", HaswellModel,
                       FeatureBMI, FeatureBMI2, FeatureFMA, FeatureRTM,
                       FeatureHLE]>;
 
+// Broadwell
+def : ProcessorModel<"broadwell", HaswellModel,
+                     [FeatureAVX2, FeatureCMPXCHG16B, FeatureFastUAMem,
+                      FeaturePOPCNT, FeatureAES, FeaturePCLMUL, FeatureRDRAND,
+                      FeatureF16C, FeatureFSGSBase, FeatureMOVBE, FeatureLZCNT,
+                      FeatureBMI, FeatureBMI2, FeatureFMA, FeatureRTM,
+                      FeatureHLE, FeatureADX, FeatureRDSEED, FeatureSMAP]>;
 // KNL
 // FIXME: define KNL model
 def : ProcessorModel<"knl", HaswellModel,
@@ -273,7 +292,19 @@ def : ProcessorModel<"knl", HaswellModel,
                       FeatureCMPXCHG16B, FeatureFastUAMem, FeaturePOPCNT,
                       FeatureAES, FeaturePCLMUL, FeatureRDRAND, FeatureF16C,
                       FeatureFSGSBase, FeatureMOVBE, FeatureLZCNT, FeatureBMI,
-                      FeatureBMI2, FeatureFMA, FeatureRTM, FeatureHLE]>;
+                      FeatureBMI2, FeatureFMA, FeatureRTM, FeatureHLE,
+                      FeatureSlowIncDec]>;
+
+// SKX
+// FIXME: define SKX model
+def : ProcessorModel<"skx", HaswellModel,
+                     [FeatureAVX512, FeatureCDI,
+                      FeatureDQI, FeatureBWI, FeatureVLX,
+                      FeatureCMPXCHG16B, FeatureFastUAMem, FeaturePOPCNT,
+                      FeatureAES, FeaturePCLMUL, FeatureRDRAND, FeatureF16C,
+                      FeatureFSGSBase, FeatureMOVBE, FeatureLZCNT, FeatureBMI,
+                      FeatureBMI2, FeatureFMA, FeatureRTM, FeatureHLE,
+                      FeatureSlowIncDec, FeatureSGX]>;
 
 def : Proc<"k6",              [FeatureMMX]>;
 def : Proc<"k6-2",            [Feature3DNow]>;
@@ -310,11 +341,14 @@ def : Proc<"amdfam10",        [FeatureSSE4A,
 def : Proc<"btver1",          [FeatureSSSE3, FeatureSSE4A, FeatureCMPXCHG16B,
                                FeaturePRFCHW, FeatureLZCNT, FeaturePOPCNT,
                                FeatureSlowSHLD]>;
+
 // Jaguar
-def : Proc<"btver2",          [FeatureAVX, FeatureSSE4A, FeatureCMPXCHG16B,
-                               FeaturePRFCHW, FeatureAES, FeaturePCLMUL,
-                               FeatureBMI, FeatureF16C, FeatureMOVBE,
-                               FeatureLZCNT, FeaturePOPCNT, FeatureSlowSHLD]>;
+def : ProcessorModel<"btver2", BtVer2Model,
+                     [FeatureAVX, FeatureSSE4A, FeatureCMPXCHG16B,
+                      FeaturePRFCHW, FeatureAES, FeaturePCLMUL,
+                      FeatureBMI, FeatureF16C, FeatureMOVBE,
+                      FeatureLZCNT, FeaturePOPCNT, FeatureSlowSHLD]>;
+
 // Bulldozer
 def : Proc<"bdver1",          [FeatureXOP, FeatureFMA4, FeatureCMPXCHG16B,
                                FeatureAES, FeaturePRFCHW, FeaturePCLMUL,

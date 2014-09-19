@@ -55,12 +55,17 @@ public:
       : MCObjectStreamer(Context, MAB, OS, Emitter),
         LabelSections(label) {}
 
+  /// state management
+  void reset() override {
+    HasSectionLabel.clear();
+    MCObjectStreamer::reset();
+  }
+
   /// @name MCStreamer Interface
   /// @{
 
   void ChangeSection(const MCSection *Sect, const MCExpr *Subsect) override;
   void EmitLabel(MCSymbol *Symbol) override;
-  void EmitDebugLabel(MCSymbol *Symbol) override;
   void EmitEHSymAttributes(const MCSymbol *Symbol, MCSymbol *EHSymbol) override;
   void EmitAssemblerFlag(MCAssemblerFlag Flag) override;
   void EmitLinkerOptions(ArrayRef<std::string> Options) override;
@@ -91,8 +96,8 @@ public:
                              unsigned ByteAlignment) override;
   void EmitZerofill(const MCSection *Section, MCSymbol *Symbol = nullptr,
                     uint64_t Size = 0, unsigned ByteAlignment = 0) override;
-  virtual void EmitTBSSSymbol(const MCSection *Section, MCSymbol *Symbol,
-                      uint64_t Size, unsigned ByteAlignment = 0) override;
+  void EmitTBSSSymbol(const MCSection *Section, MCSymbol *Symbol, uint64_t Size,
+                      unsigned ByteAlignment = 0) override;
 
   void EmitFileDirective(StringRef Filename) override {
     // FIXME: Just ignore the .file; it isn't important enough to fail the
@@ -162,9 +167,6 @@ void MCMachOStreamer::EmitLabel(MCSymbol *Symbol) {
   SD.setFlags(SD.getFlags() & ~SF_ReferenceTypeMask);
 }
 
-void MCMachOStreamer::EmitDebugLabel(MCSymbol *Symbol) {
-  EmitLabel(Symbol);
-}
 void MCMachOStreamer::EmitDataRegion(DataRegionData::KindTy Kind) {
   if (!getAssembler().getBackend().hasDataInCodeSupport())
     return;

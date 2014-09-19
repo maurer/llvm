@@ -38,7 +38,6 @@ namespace llvm {
   class DIFile;
   class DIEnumerator;
   class DIType;
-  class DIArray;
   class DIGlobalVariable;
   class DIImportedEntity;
   class DINameSpace;
@@ -86,7 +85,7 @@ namespace llvm {
 
     public:
     explicit DIBuilder(Module &M);
-    enum ComplexAddrKind { OpPlus=1, OpDeref };
+    enum ComplexAddrKind { OpPlus=1, OpDeref, OpPiece };
     enum DebugEmissionKind { FullDebug=1, LineTablesOnly };
 
     /// finalize - Construct any deferred debug info descriptors.
@@ -108,12 +107,23 @@ namespace llvm {
     ///                 Objective-C.
     /// @param SplitName The name of the file that we'll split debug info out
     ///                  into.
+    /// @param Kind     The kind of debug information to generate.
+    /// @param EmitDebugInfo   A boolean flag which indicates whether debug
+    ///                        information should be written to the final
+    ///                        output or not. When this is false, debug
+    ///                        information annotations will be present in
+    ///                        the IL but they are not written to the final
+    ///                        assembly or object file. This supports tracking
+    ///                        source location information in the back end
+    ///                        without actually changing the output (e.g.,
+    ///                        when using optimization remarks).
     DICompileUnit createCompileUnit(unsigned Lang, StringRef File,
                                     StringRef Dir, StringRef Producer,
                                     bool isOptimized, StringRef Flags,
                                     unsigned RV,
                                     StringRef SplitName = StringRef(),
-                                    DebugEmissionKind Kind = FullDebug);
+                                    DebugEmissionKind Kind = FullDebug,
+                                    bool EmitDebugInfo = true);
 
     /// createFile - Create a file descriptor to hold debugging information
     /// for a file.
@@ -424,8 +434,9 @@ namespace llvm {
     ///                        includes return type at 0th index.
     /// @param Flags           E.g.: LValueReference.
     ///                        These flags are used to emit dwarf attributes.
-    DICompositeType createSubroutineType(DIFile File, DIArray ParameterTypes,
-                                         unsigned Flags = 0);
+    DISubroutineType createSubroutineType(DIFile File,
+                                          DITypeArray ParameterTypes,
+                                          unsigned Flags = 0);
 
     /// createArtificialType - Create a new DIType with "artificial" flag set.
     DIType createArtificialType(DIType Ty);
@@ -452,12 +463,15 @@ namespace llvm {
     /// through debug info anchors.
     void retainType(DIType T);
 
-    /// createUnspecifiedParameter - Create unspecified type descriptor
+    /// createUnspecifiedParameter - Create unspecified parameter type
     /// for a subroutine type.
-    DIDescriptor createUnspecifiedParameter();
+    DIBasicType createUnspecifiedParameter();
 
     /// getOrCreateArray - Get a DIArray, create one if required.
     DIArray getOrCreateArray(ArrayRef<Value *> Elements);
+
+    /// getOrCreateTypeArray - Get a DITypeArray, create one if required.
+    DITypeArray getOrCreateTypeArray(ArrayRef<Value *> Elements);
 
     /// getOrCreateSubrange - Create a descriptor for a value range.  This
     /// implicitly uniques the values returned.
@@ -507,6 +521,15 @@ namespace llvm {
                          DITypeRef Ty, bool isLocalToUnit, llvm::Value *Val,
                          MDNode *Decl = nullptr);
 
+    /// createTempStaticVariableFwdDecl - Identical to createStaticVariable
+    /// except that the resulting DbgNode is temporary and meant to be RAUWed.
+    DIGlobalVariable
+    createTempStaticVariableFwdDecl(DIDescriptor Context, StringRef Name,
+                                    StringRef LinkageName, DIFile File,
+                                    unsigned LineNo, DITypeRef Ty,
+                                    bool isLocalToUnit, llvm::Value *Val,
+                                    MDNode *Decl = nullptr);
+
 
     /// createLocalVariable - Create a new descriptor for the specified
     /// local variable.
@@ -547,6 +570,16 @@ namespace llvm {
                                      DITypeRef Ty, ArrayRef<Value *> Addr,
                                      unsigned ArgNo = 0);
 
+    /// createVariablePiece - Create a descriptor to describe one part
+    /// of aggregate variable that is fragmented across multiple Values.
+    ///
+    /// @param Variable      Variable that is partially represented by this.
+    /// @param OffsetInBytes Offset of the piece in bytes.
+    /// @param SizeInBytes   Size of the piece in bytes.
+    DIVariable createVariablePiece(DIVariable Variable,
+                                   unsigned OffsetInBytes,
+                                   unsigned SizeInBytes);
+
     /// createFunction - Create a new descriptor for the specified subprogram.
     /// See comments in DISubprogram for descriptions of these fields.
     /// @param Scope         Function scope.
@@ -574,6 +607,21 @@ namespace llvm {
                                 Function *Fn = nullptr,
                                 MDNode *TParam = nullptr,
                                 MDNode *Decl = nullptr);
+
+    /// createTempFunctionFwdDecl - Identical to createFunction,
+    /// except that the resulting DbgNode is meant to be RAUWed.
+    DISubprogram createTempFunctionFwdDecl(DIDescriptor Scope, StringRef Name,
+                                           StringRef LinkageName,
+                                           DIFile File, unsigned LineNo,
+                                           DICompositeType Ty, bool isLocalToUnit,
+                                           bool isDefinition,
+                                           unsigned ScopeLine,
+                                           unsigned Flags = 0,
+                                           bool isOptimized = false,
+                                           Function *Fn = nullptr,
+                                           MDNode *TParam = nullptr,
+                                           MDNode *Decl = nullptr);
+
 
     /// FIXME: this is added for dragonegg. Once we update dragonegg
     /// to call resolve function, this will be removed.
@@ -635,8 +683,9 @@ namespace llvm {
     /// lexical block as it crosses a file.
     /// @param Scope       Lexical block.
     /// @param File        Source file.
-    DILexicalBlockFile createLexicalBlockFile(DIDescriptor Scope,
-                                              DIFile File);
+    /// @param Discriminator DWARF path discriminator value.
+    DILexicalBlockFile createLexicalBlockFile(DIDescriptor Scope, DIFile File,
+                                              unsigned Discriminator = 0);
 
     /// createLexicalBlock - This creates a descriptor for a lexical block
     /// with the specified parent context.
@@ -644,10 +693,8 @@ namespace llvm {
     /// @param File          Source file.
     /// @param Line          Line number.
     /// @param Col           Column number.
-    /// @param Discriminator DWARF path discriminator value.
     DILexicalBlock createLexicalBlock(DIDescriptor Scope, DIFile File,
-                                      unsigned Line, unsigned Col,
-                                      unsigned Discriminator);
+                                      unsigned Line, unsigned Col);
 
     /// \brief Create a descriptor for an imported module.
     /// @param Context The scope this module is imported into
@@ -708,7 +755,6 @@ namespace llvm {
     Instruction *insertDbgValueIntrinsic(llvm::Value *Val, uint64_t Offset,
                                          DIVariable VarInfo,
                                          Instruction *InsertBefore);
-
   };
 } // end namespace llvm
 

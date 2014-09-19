@@ -58,8 +58,8 @@ static Type *reduceToSingleValueType(Type *T) {
 }
 
 Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
-  unsigned DstAlign = getKnownAlignment(MI->getArgOperand(0), DL);
-  unsigned SrcAlign = getKnownAlignment(MI->getArgOperand(1), DL);
+  unsigned DstAlign = getKnownAlignment(MI->getArgOperand(0), DL, AT, MI, DT);
+  unsigned SrcAlign = getKnownAlignment(MI->getArgOperand(1), DL, AT, MI, DT);
   unsigned MinAlign = std::min(DstAlign, SrcAlign);
   unsigned CopyAlign = MI->getAlignment();
 
@@ -154,7 +154,7 @@ Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
 }
 
 Instruction *InstCombiner::SimplifyMemSet(MemSetInst *MI) {
-  unsigned Alignment = getKnownAlignment(MI->getDest(), DL);
+  unsigned Alignment = getKnownAlignment(MI->getDest(), DL, AT, MI, DT);
   if (MI->getAlignment() < Alignment) {
     MI->setAlignment(ConstantInt::get(MI->getAlignmentType(),
                                              Alignment, false));
@@ -322,7 +322,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint32_t BitWidth = IT->getBitWidth();
     APInt KnownZero(BitWidth, 0);
     APInt KnownOne(BitWidth, 0);
-    computeKnownBits(II->getArgOperand(0), KnownZero, KnownOne);
+    computeKnownBits(II->getArgOperand(0), KnownZero, KnownOne, 0, II);
     unsigned TrailingZeros = KnownOne.countTrailingZeros();
     APInt Mask(APInt::getLowBitsSet(BitWidth, TrailingZeros));
     if ((Mask & KnownZero) == Mask)
@@ -340,7 +340,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint32_t BitWidth = IT->getBitWidth();
     APInt KnownZero(BitWidth, 0);
     APInt KnownOne(BitWidth, 0);
-    computeKnownBits(II->getArgOperand(0), KnownZero, KnownOne);
+    computeKnownBits(II->getArgOperand(0), KnownZero, KnownOne, 0, II);
     unsigned LeadingZeros = KnownOne.countLeadingZeros();
     APInt Mask(APInt::getHighBitsSet(BitWidth, LeadingZeros));
     if ((Mask & KnownZero) == Mask)
@@ -355,14 +355,14 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint32_t BitWidth = IT->getBitWidth();
     APInt LHSKnownZero(BitWidth, 0);
     APInt LHSKnownOne(BitWidth, 0);
-    computeKnownBits(LHS, LHSKnownZero, LHSKnownOne);
+    computeKnownBits(LHS, LHSKnownZero, LHSKnownOne, 0, II);
     bool LHSKnownNegative = LHSKnownOne[BitWidth - 1];
     bool LHSKnownPositive = LHSKnownZero[BitWidth - 1];
 
     if (LHSKnownNegative || LHSKnownPositive) {
       APInt RHSKnownZero(BitWidth, 0);
       APInt RHSKnownOne(BitWidth, 0);
-      computeKnownBits(RHS, RHSKnownZero, RHSKnownOne);
+      computeKnownBits(RHS, RHSKnownZero, RHSKnownOne, 0, II);
       bool RHSKnownNegative = RHSKnownOne[BitWidth - 1];
       bool RHSKnownPositive = RHSKnownZero[BitWidth - 1];
       if (LHSKnownNegative && RHSKnownNegative) {
@@ -421,6 +421,21 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
         return InsertValueInst::Create(Struct, II->getArgOperand(0), 0);
       }
     }
+
+    // We can strength reduce reduce this signed add into a regular add if we
+    // can prove that it will never overflow.
+    if (II->getIntrinsicID() == Intrinsic::sadd_with_overflow) {
+      Value *LHS = II->getArgOperand(0), *RHS = II->getArgOperand(1);
+      if (WillNotOverflowSignedAdd(LHS, RHS, II)) {
+        Value *Add = Builder->CreateNSWAdd(LHS, RHS);
+        Add->takeName(&CI);
+        Constant *V[] = {UndefValue::get(Add->getType()), Builder->getFalse()};
+        StructType *ST = cast<StructType>(II->getType());
+        Constant *Struct = ConstantStruct::get(ST, V);
+        return InsertValueInst::Create(Struct, Add, 0);
+      }
+    }
+
     break;
   case Intrinsic::usub_with_overflow:
   case Intrinsic::ssub_with_overflow:
@@ -449,10 +464,10 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
 
     APInt LHSKnownZero(BitWidth, 0);
     APInt LHSKnownOne(BitWidth, 0);
-    computeKnownBits(LHS, LHSKnownZero, LHSKnownOne);
+    computeKnownBits(LHS, LHSKnownZero, LHSKnownOne, 0, II);
     APInt RHSKnownZero(BitWidth, 0);
     APInt RHSKnownOne(BitWidth, 0);
-    computeKnownBits(RHS, RHSKnownZero, RHSKnownOne);
+    computeKnownBits(RHS, RHSKnownZero, RHSKnownOne, 0, II);
 
     // Get the largest possible values for each operand.
     APInt LHSMax = ~LHSKnownZero;
@@ -506,7 +521,8 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::ppc_altivec_lvx:
   case Intrinsic::ppc_altivec_lvxl:
     // Turn PPC lvx -> load if the pointer is known aligned.
-    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16, DL) >= 16) {
+    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16,
+                                   DL, AT, II, DT) >= 16) {
       Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
                                          PointerType::getUnqual(II->getType()));
       return new LoadInst(Ptr);
@@ -515,7 +531,8 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::ppc_altivec_stvx:
   case Intrinsic::ppc_altivec_stvxl:
     // Turn stvx -> store if the pointer is known aligned.
-    if (getOrEnforceKnownAlignment(II->getArgOperand(1), 16, DL) >= 16) {
+    if (getOrEnforceKnownAlignment(II->getArgOperand(1), 16,
+                                   DL, AT, II, DT) >= 16) {
       Type *OpPtrTy =
         PointerType::getUnqual(II->getArgOperand(0)->getType());
       Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
@@ -526,7 +543,8 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::x86_sse2_storeu_pd:
   case Intrinsic::x86_sse2_storeu_dq:
     // Turn X86 storeu -> store if the pointer is known aligned.
-    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16, DL) >= 16) {
+    if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16,
+                                   DL, AT, II, DT) >= 16) {
       Type *OpPtrTy =
         PointerType::getUnqual(II->getArgOperand(1)->getType());
       Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0), OpPtrTy);
@@ -665,7 +683,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
               CI,
               Builder->CreateShuffleVector(
                   Vec, Undef, ConstantDataVector::get(
-                                  II->getContext(), ArrayRef<uint32_t>(Mask))));
+                                  II->getContext(), makeArrayRef(Mask))));
 
         } else if (auto Source =
                        dyn_cast<IntrinsicInst>(II->getArgOperand(0))) {
@@ -871,7 +889,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::arm_neon_vst2lane:
   case Intrinsic::arm_neon_vst3lane:
   case Intrinsic::arm_neon_vst4lane: {
-    unsigned MemAlign = getKnownAlignment(II->getArgOperand(0), DL);
+    unsigned MemAlign = getKnownAlignment(II->getArgOperand(0), DL, AT, II, DT);
     unsigned AlignArg = II->getNumArgOperands() - 1;
     ConstantInt *IntrAlign = dyn_cast<ConstantInt>(II->getArgOperand(AlignArg));
     if (IntrAlign && IntrAlign->getZExtValue() < MemAlign) {
@@ -922,6 +940,20 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     break;
   }
 
+  case Intrinsic::AMDGPU_rcp: {
+    if (const ConstantFP *C = dyn_cast<ConstantFP>(II->getArgOperand(0))) {
+      const APFloat &ArgVal = C->getValueAPF();
+      APFloat Val(ArgVal.getSemantics(), 1.0);
+      APFloat::opStatus Status = Val.divide(ArgVal,
+                                            APFloat::rmNearestTiesToEven);
+      // Only do this if it was exact and therefore not dependent on the
+      // rounding mode.
+      if (Status == APFloat::opOK)
+        return ReplaceInstUsesWith(CI, ConstantFP::get(II->getContext(), Val));
+    }
+
+    break;
+  }
   case Intrinsic::stackrestore: {
     // If the save is right next to the restore, remove the restore.  This can
     // happen when variable allocas are DCE'd.
@@ -963,6 +995,27 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     // restore.
     if (!CannotRemove && (isa<ReturnInst>(TI) || isa<ResumeInst>(TI)))
       return EraseInstFromFunction(CI);
+    break;
+  }
+  case Intrinsic::assume: {
+    // Canonicalize assume(a && b) -> assume(a); assume(b);
+    // Note: New assumption intrinsics created here are registered by
+    // the InstCombineIRInserter object.
+    Value *IIOperand = II->getArgOperand(0), *A, *B,
+          *AssumeIntrinsic = II->getCalledValue();
+    if (match(IIOperand, m_And(m_Value(A), m_Value(B)))) {
+      Builder->CreateCall(AssumeIntrinsic, A, II->getName());
+      Builder->CreateCall(AssumeIntrinsic, B, II->getName());
+      return EraseInstFromFunction(*II);
+    }
+    // assume(!(a || b)) -> assume(!a); assume(!b);
+    if (match(IIOperand, m_Not(m_Or(m_Value(A), m_Value(B))))) {
+      Builder->CreateCall(AssumeIntrinsic, Builder->CreateNot(A),
+                          II->getName());
+      Builder->CreateCall(AssumeIntrinsic, Builder->CreateNot(B),
+                          II->getName());
+      return EraseInstFromFunction(*II);
+    }
     break;
   }
   }

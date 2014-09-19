@@ -83,16 +83,17 @@ int main(int argc, char **argv) {
   if (OutputFilename.empty())
     OutputFilename = "-";
 
-  std::string ErrorInfo;
+  std::error_code EC;
   std::unique_ptr<tool_output_file> Out(
-      new tool_output_file(OutputFilename.c_str(), ErrorInfo, sys::fs::F_None));
-  if (!ErrorInfo.empty()) {
-    errs() << ErrorInfo << '\n';
+      new tool_output_file(OutputFilename, EC, sys::fs::F_None));
+  if (EC) {
+    errs() << EC.message() << '\n';
     return 1;
   }
 
-  std::unique_ptr<MemoryBuffer> Buf;
-  if (MemoryBuffer::getFileOrSTDIN(Input, Buf))
+  ErrorOr<std::unique_ptr<MemoryBuffer>> Buf =
+      MemoryBuffer::getFileOrSTDIN(Input);
+  if (!Buf)
     return 1;
 
   ConvertFuncPtr Convert = nullptr;
@@ -105,7 +106,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  yaml::Input YIn(Buf->getBuffer());
+  yaml::Input YIn(Buf.get()->getBuffer());
 
   int Res = convertYAML(YIn, Out->os(), Convert);
   if (Res == 0)

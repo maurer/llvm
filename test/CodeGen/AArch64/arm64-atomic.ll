@@ -35,7 +35,8 @@ define i32 @fetch_and_nand(i32* %p) {
 ; CHECK-LABEL: fetch_and_nand:
 ; CHECK: [[LABEL:.?LBB[0-9]+_[0-9]+]]:
 ; CHECK: ldxr   w[[DEST_REG:[0-9]+]], [x0]
-; CHECK: and    [[SCRATCH2_REG:w[0-9]+]], w[[DEST_REG]], #0xfffffff8
+; CHECK: mvn    [[TMP_REG:w[0-9]+]], w[[DEST_REG]]
+; CHECK: orr    [[SCRATCH2_REG:w[0-9]+]], [[TMP_REG]], #0xfffffff8
 ; CHECK-NOT: stlxr [[SCRATCH2_REG]], [[SCRATCH2_REG]]
 ; CHECK: stlxr   [[SCRATCH_REG:w[0-9]+]], [[SCRATCH2_REG]], [x0]
 ; CHECK: cbnz   [[SCRATCH_REG]], [[LABEL]]
@@ -46,12 +47,13 @@ define i32 @fetch_and_nand(i32* %p) {
 
 define i64 @fetch_and_nand_64(i64* %p) {
 ; CHECK-LABEL: fetch_and_nand_64:
-; CHECK: mov    x[[ADDR:[0-9]+]], x0
 ; CHECK: [[LABEL:.?LBB[0-9]+_[0-9]+]]:
-; CHECK: ldaxr   [[DEST_REG:x[0-9]+]], [x[[ADDR]]]
-; CHECK: and    [[SCRATCH2_REG:x[0-9]+]], [[DEST_REG]], #0xfffffffffffffff8
-; CHECK: stlxr   [[SCRATCH_REG:w[0-9]+]], [[SCRATCH2_REG]], [x[[ADDR]]]
+; CHECK: ldaxr   x[[DEST_REG:[0-9]+]], [x0]
+; CHECK: mvn    w[[TMP_REG:[0-9]+]], w[[DEST_REG]]
+; CHECK: orr    [[SCRATCH2_REG:x[0-9]+]], x[[TMP_REG]], #0xfffffffffffffff8
+; CHECK: stlxr   [[SCRATCH_REG:w[0-9]+]], [[SCRATCH2_REG]], [x0]
 ; CHECK: cbnz   [[SCRATCH_REG]], [[LABEL]]
+; CHECK: mov    x0, x[[DEST_REG]]
 
   %val = atomicrmw nand i64* %p, i64 7 acq_rel
   ret i64 %val
@@ -73,12 +75,12 @@ define i32 @fetch_and_or(i32* %p) {
 
 define i64 @fetch_and_or_64(i64* %p) {
 ; CHECK: fetch_and_or_64:
-; CHECK: mov    x[[ADDR:[0-9]+]], x0
 ; CHECK: [[LABEL:.?LBB[0-9]+_[0-9]+]]:
-; CHECK: ldxr   [[DEST_REG:x[0-9]+]], [x[[ADDR]]]
+; CHECK: ldxr   [[DEST_REG:x[0-9]+]], [x0]
 ; CHECK: orr    [[SCRATCH2_REG:x[0-9]+]], [[DEST_REG]], #0x7
-; CHECK: stxr   [[SCRATCH_REG:w[0-9]+]], [[SCRATCH2_REG]], [x[[ADDR]]]
+; CHECK: stxr   [[SCRATCH_REG:w[0-9]+]], [[SCRATCH2_REG]], [x0]
 ; CHECK: cbnz   [[SCRATCH_REG]], [[LABEL]]
+; CHECK: mov    x0, [[DEST_REG]]
   %val = atomicrmw or i64* %p, i64 7 monotonic
   ret i64 %val
 }

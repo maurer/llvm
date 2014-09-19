@@ -35,6 +35,7 @@
 
 namespace llvm {
   class APInt;
+  class AssumptionTracker;
   class Constant;
   class ConstantInt;
   class DominatorTree;
@@ -220,6 +221,9 @@ namespace llvm {
     /// F - The function we are analyzing.
     ///
     Function *F;
+
+    /// The tracker for @llvm.assume intrinsics in this function.
+    AssumptionTracker *AT;
 
     /// LI - The loop information for the function we are currently analyzing.
     ///
@@ -795,7 +799,8 @@ namespace llvm {
 
     /// forgetLoop - This method should be called by the client when it has
     /// changed a loop in a way that may effect ScalarEvolution's ability to
-    /// compute a trip count, or if the loop is deleted.
+    /// compute a trip count, or if the loop is deleted.  This call is
+    /// potentially expensive for large loop bodies.
     void forgetLoop(const Loop *L);
 
     /// forgetValue - This method should be called by the client when it has

@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCExpr.h"
@@ -377,7 +378,15 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VMOVUPDYrr,  X86::VMOVUPDYmr,    TB_FOLDED_STORE },
     { X86::VMOVUPSYrr,  X86::VMOVUPSYmr,    TB_FOLDED_STORE },
     // AVX-512 foldable instructions
-    { X86::VMOVPDI2DIZrr,X86::VMOVPDI2DIZmr,  TB_FOLDED_STORE }
+    { X86::VMOVPDI2DIZrr,   X86::VMOVPDI2DIZmr, TB_FOLDED_STORE },
+    { X86::VMOVAPDZrr,      X86::VMOVAPDZmr,    TB_FOLDED_STORE | TB_ALIGN_64 },
+    { X86::VMOVAPSZrr,      X86::VMOVAPSZmr,    TB_FOLDED_STORE | TB_ALIGN_64 },
+    { X86::VMOVDQA32Zrr,    X86::VMOVDQA32Zmr,  TB_FOLDED_STORE | TB_ALIGN_64 },
+    { X86::VMOVDQA64Zrr,    X86::VMOVDQA64Zmr,  TB_FOLDED_STORE | TB_ALIGN_64 },
+    { X86::VMOVUPDZrr,      X86::VMOVUPDZmr,    TB_FOLDED_STORE },
+    { X86::VMOVUPSZrr,      X86::VMOVUPSZmr,    TB_FOLDED_STORE },
+    { X86::VMOVDQU32Zrr,    X86::VMOVDQU32Zmr,  TB_FOLDED_STORE },
+    { X86::VMOVDQU64Zrr,    X86::VMOVDQU64Zmr,  TB_FOLDED_STORE }
   };
 
   for (unsigned i = 0, e = array_lengthof(OpTbl0); i != e; ++i) {
@@ -601,10 +610,14 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     // AVX-512 foldable instructions
     { X86::VMOV64toPQIZrr,  X86::VMOVQI2PQIZrm,       0 },
     { X86::VMOVDI2SSZrr,    X86::VMOVDI2SSZrm,        0 },
-    { X86::VMOVDQA32rr,     X86::VMOVDQA32rm,         TB_ALIGN_64 },
-    { X86::VMOVDQA64rr,     X86::VMOVDQA64rm,         TB_ALIGN_64 },
-    { X86::VMOVDQU32rr,     X86::VMOVDQU32rm,         0 },
-    { X86::VMOVDQU64rr,     X86::VMOVDQU64rm,         0 },
+    { X86::VMOVAPDZrr,      X86::VMOVAPDZrm,          TB_ALIGN_64 },
+    { X86::VMOVAPSZrr,      X86::VMOVAPSZrm,          TB_ALIGN_64 },
+    { X86::VMOVDQA32Zrr,    X86::VMOVDQA32Zrm,        TB_ALIGN_64 },
+    { X86::VMOVDQA64Zrr,    X86::VMOVDQA64Zrm,        TB_ALIGN_64 },
+    { X86::VMOVDQU32Zrr,    X86::VMOVDQU32Zrm,        0 },
+    { X86::VMOVDQU64Zrr,    X86::VMOVDQU64Zrm,        0 },
+    { X86::VMOVUPDZrr,      X86::VMOVUPDZrm,          0 },
+    { X86::VMOVUPSZrr,      X86::VMOVUPSZrm,          0 },
     { X86::VPABSDZrr,       X86::VPABSDZrm,           0 },
     { X86::VPABSQZrr,       X86::VPABSQZrm,           0 },
 
@@ -612,7 +625,7 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::AESIMCrr,              X86::AESIMCrm,              TB_ALIGN_16 },
     { X86::AESKEYGENASSIST128rr,  X86::AESKEYGENASSIST128rm,  TB_ALIGN_16 },
     { X86::VAESIMCrr,             X86::VAESIMCrm,             TB_ALIGN_16 },
-    { X86::VAESKEYGENASSIST128rr, X86::VAESKEYGENASSIST128rm, TB_ALIGN_16 },
+    { X86::VAESKEYGENASSIST128rr, X86::VAESKEYGENASSIST128rm, TB_ALIGN_16 }
   };
 
   for (unsigned i = 0, e = array_lengthof(OpTbl1); i != e; ++i) {
@@ -2696,8 +2709,8 @@ unsigned X86::getSETFromCond(CondCode CC, bool HasMemoryOperand) {
 
 /// getCMovFromCond - Return a cmov opcode for the given condition,
 /// register size in bytes, and operand type.
-static unsigned getCMovFromCond(X86::CondCode CC, unsigned RegBytes,
-                                bool HasMemoryOperand) {
+unsigned X86::getCMovFromCond(CondCode CC, unsigned RegBytes,
+                              bool HasMemoryOperand) {
   static const uint16_t Opc[32][3] = {
     { X86::CMOVA16rr,  X86::CMOVA32rr,  X86::CMOVA64rr  },
     { X86::CMOVAE16rr, X86::CMOVAE32rr, X86::CMOVAE64rr },
@@ -3067,6 +3080,8 @@ static unsigned CopyToFromAsymmetricReg(unsigned DestReg, unsigned SrcReg,
 inline static bool MaskRegClassContains(unsigned Reg) {
   return X86::VK8RegClass.contains(Reg) ||
          X86::VK16RegClass.contains(Reg) ||
+         X86::VK32RegClass.contains(Reg) ||
+         X86::VK64RegClass.contains(Reg) ||
          X86::VK1RegClass.contains(Reg);
 }
 static
@@ -3143,7 +3158,7 @@ void X86InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 
   // Moving EFLAGS to / from another register requires a push and a pop.
   // Notice that we have to adjust the stack if we don't want to clobber the
-  // first frame index. See X86FrameLowering.cpp - colobbersTheStack.
+  // first frame index. See X86FrameLowering.cpp - clobbersTheStack.
   if (SrcReg == X86::EFLAGS) {
     if (X86::GR64RegClass.contains(DestReg)) {
       BuildMI(MBB, MI, DL, get(X86::PUSHF64));
@@ -3287,9 +3302,11 @@ void X86InstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
   assert(MF.getFrameInfo()->getObjectSize(FrameIdx) >= RC->getSize() &&
          "Stack slot too small for store");
   unsigned Alignment = std::max<uint32_t>(RC->getSize(), 16);
-  bool isAligned =
-      (MF.getTarget().getFrameLowering()->getStackAlignment() >= Alignment) ||
-      RI.canRealignStack(MF);
+  bool isAligned = (MF.getTarget()
+                        .getSubtargetImpl()
+                        ->getFrameLowering()
+                        ->getStackAlignment() >= Alignment) ||
+                   RI.canRealignStack(MF);
   unsigned Opc = getStoreRegOpcode(SrcReg, RC, isAligned, Subtarget);
   DebugLoc DL = MBB.findDebugLoc(MI);
   addFrameReference(BuildMI(MBB, MI, DL, get(Opc)), FrameIdx)
@@ -3324,9 +3341,11 @@ void X86InstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                         const TargetRegisterInfo *TRI) const {
   const MachineFunction &MF = *MBB.getParent();
   unsigned Alignment = std::max<uint32_t>(RC->getSize(), 16);
-  bool isAligned =
-      (MF.getTarget().getFrameLowering()->getStackAlignment() >= Alignment) ||
-      RI.canRealignStack(MF);
+  bool isAligned = (MF.getTarget()
+                        .getSubtargetImpl()
+                        ->getFrameLowering()
+                        ->getStackAlignment() >= Alignment) ||
+                   RI.canRealignStack(MF);
   unsigned Opc = getLoadRegOpcode(DestReg, RC, isAligned, Subtarget);
   DebugLoc DL = MBB.findDebugLoc(MI);
   addFrameReference(BuildMI(MBB, MI, DL, get(Opc), DestReg), FrameIdx);
@@ -3961,6 +3980,28 @@ static bool Expand2AddrUndef(MachineInstrBuilder &MIB,
   return true;
 }
 
+// LoadStackGuard has so far only been implemented for 64-bit MachO. Different
+// code sequence is needed for other targets.
+static void expandLoadStackGuard(MachineInstrBuilder &MIB,
+                                 const TargetInstrInfo &TII) {
+  MachineBasicBlock &MBB = *MIB->getParent();
+  DebugLoc DL = MIB->getDebugLoc();
+  unsigned Reg = MIB->getOperand(0).getReg();
+  const GlobalValue *GV =
+      cast<GlobalValue>((*MIB->memoperands_begin())->getValue());
+  unsigned Flag = MachineMemOperand::MOLoad | MachineMemOperand::MOInvariant;
+  MachineMemOperand *MMO = MBB.getParent()->
+      getMachineMemOperand(MachinePointerInfo::getGOT(), Flag, 8, 8);
+  MachineBasicBlock::iterator I = MIB;
+
+  BuildMI(MBB, I, DL, TII.get(X86::MOV64rm), Reg).addReg(X86::RIP).addImm(1)
+      .addReg(0).addGlobalAddress(GV, 0, X86II::MO_GOTPCREL).addReg(0)
+      .addMemOperand(MMO);
+  MIB->setDebugLoc(DL);
+  MIB->setDesc(TII.get(X86::MOV64rm));
+  MIB.addReg(Reg, RegState::Kill).addImm(1).addReg(0).addImm(0).addReg(0);
+}
+
 bool X86InstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   bool HasAVX = Subtarget.hasAVX();
   MachineInstrBuilder MIB(*MI->getParent()->getParent(), MI);
@@ -3995,6 +4036,9 @@ bool X86InstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   case X86::KSET0W: return Expand2AddrUndef(MIB, get(X86::KXORWrr));
   case X86::KSET1B:
   case X86::KSET1W: return Expand2AddrUndef(MIB, get(X86::KXNORWrr));
+  case TargetOpcode::LOAD_STACK_GUARD:
+    expandLoadStackGuard(MIB, *this);
+    return true;
   }
   return false;
 }
@@ -4350,8 +4394,10 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
   // If the function stack isn't realigned we don't want to fold instructions
   // that need increased alignment.
   if (!RI.needsStackRealignment(MF))
-    Alignment = std::min(
-        Alignment, MF.getTarget().getFrameLowering()->getStackAlignment());
+    Alignment = std::min(Alignment, MF.getTarget()
+                                        .getSubtargetImpl()
+                                        ->getFrameLowering()
+                                        ->getStackAlignment());
   if (Ops.size() == 2 && Ops[0] == 0 && Ops[1] == 1) {
     unsigned NewOpc = 0;
     unsigned RCSize = 0;
@@ -4377,6 +4423,25 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
   return foldMemoryOperandImpl(MF, MI, Ops[0], MOs, Size, Alignment);
 }
 
+static bool isPartialRegisterLoad(const MachineInstr &LoadMI,
+                                  const MachineFunction &MF) {
+  unsigned Opc = LoadMI.getOpcode();
+  unsigned RegSize =
+      MF.getRegInfo().getRegClass(LoadMI.getOperand(0).getReg())->getSize();
+
+  if ((Opc == X86::MOVSSrm || Opc == X86::VMOVSSrm) && RegSize > 4)
+    // These instructions only load 32 bits, we can't fold them if the
+    // destination register is wider than 32 bits (4 bytes).
+    return true;
+
+  if ((Opc == X86::MOVSDrm || Opc == X86::VMOVSDrm) && RegSize > 8)
+    // These instructions only load 64 bits, we can't fold them if the
+    // destination register is wider than 64 bits (8 bytes).
+    return true;
+
+  return false;
+}
+
 MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
                                                   MachineInstr *MI,
                                            const SmallVectorImpl<unsigned> &Ops,
@@ -4384,8 +4449,11 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
   // If loading from a FrameIndex, fold directly from the FrameIndex.
   unsigned NumOps = LoadMI->getDesc().getNumOperands();
   int FrameIndex;
-  if (isLoadFromStackSlot(LoadMI, FrameIndex))
+  if (isLoadFromStackSlot(LoadMI, FrameIndex)) {
+    if (isPartialRegisterLoad(*LoadMI, MF))
+      return nullptr;
     return foldMemoryOperandImpl(MF, MI, Ops, FrameIndex);
+  }
 
   // Check switch flag
   if (NoFusing) return nullptr;
@@ -4496,19 +4564,7 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
     break;
   }
   default: {
-    if ((LoadMI->getOpcode() == X86::MOVSSrm ||
-         LoadMI->getOpcode() == X86::VMOVSSrm) &&
-        MF.getRegInfo().getRegClass(LoadMI->getOperand(0).getReg())->getSize()
-          > 4)
-      // These instructions only load 32 bits, we can't fold them if the
-      // destination register is wider than 32 bits (4 bytes).
-      return nullptr;
-    if ((LoadMI->getOpcode() == X86::MOVSDrm ||
-         LoadMI->getOpcode() == X86::VMOVSDrm) &&
-        MF.getRegInfo().getRegClass(LoadMI->getOperand(0).getReg())->getSize()
-          > 8)
-      // These instructions only load 64 bits, we can't fold them if the
-      // destination register is wider than 64 bits (8 bytes).
+    if (isPartialRegisterLoad(*LoadMI, MF))
       return nullptr;
 
     // Folding a normal load. Just copy the load's address operands.
@@ -5037,6 +5093,7 @@ bool X86InstrInfo::shouldScheduleAdjacent(MachineInstr* First,
   case X86::TEST16rm:
   case X86::TEST32rm:
   case X86::TEST64rm:
+  case X86::TEST8ri_NOREX:
   case X86::AND16i16:
   case X86::AND16ri:
   case X86::AND16ri8:
@@ -5425,7 +5482,7 @@ namespace {
       MachineBasicBlock::iterator MBBI = FirstMBB.begin();
       DebugLoc DL = FirstMBB.findDebugLoc(MBBI);
       MachineRegisterInfo &RegInfo = MF.getRegInfo();
-      const X86InstrInfo *TII = TM->getInstrInfo();
+      const X86InstrInfo *TII = TM->getSubtargetImpl()->getInstrInfo();
 
       unsigned PC;
       if (TM->getSubtarget<X86Subtarget>().isPICStyleGOT())
@@ -5523,7 +5580,7 @@ namespace {
       const X86TargetMachine *TM =
           static_cast<const X86TargetMachine *>(&MF->getTarget());
       const bool is64Bit = TM->getSubtarget<X86Subtarget>().is64Bit();
-      const X86InstrInfo *TII = TM->getInstrInfo();
+      const X86InstrInfo *TII = TM->getSubtargetImpl()->getInstrInfo();
 
       // Insert a Copy from TLSBaseAddrReg to RAX/EAX.
       MachineInstr *Copy = BuildMI(*I->getParent(), I, I->getDebugLoc(),
@@ -5544,7 +5601,7 @@ namespace {
       const X86TargetMachine *TM =
           static_cast<const X86TargetMachine *>(&MF->getTarget());
       const bool is64Bit = TM->getSubtarget<X86Subtarget>().is64Bit();
-      const X86InstrInfo *TII = TM->getInstrInfo();
+      const X86InstrInfo *TII = TM->getSubtargetImpl()->getInstrInfo();
 
       // Create a virtual register for the TLS base address.
       MachineRegisterInfo &RegInfo = MF->getRegInfo();

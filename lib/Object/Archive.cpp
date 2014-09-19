@@ -109,7 +109,7 @@ Archive::Child Archive::Child::getNext() const {
   const char *NextLoc = Data.data() + SpaceToSkip;
 
   // Check to see if this is past the end of the archive.
-  if (NextLoc >= Parent->Data->getBufferEnd())
+  if (NextLoc >= Parent->Data.getBufferEnd())
     return Child(Parent, nullptr);
 
   return Child(Parent, NextLoc);
@@ -159,45 +159,36 @@ ErrorOr<StringRef> Archive::Child::getName() const {
   return name;
 }
 
-ErrorOr<std::unique_ptr<MemoryBuffer>>
-Archive::Child::getMemoryBuffer(bool FullPath) const {
+ErrorOr<MemoryBufferRef> Archive::Child::getMemoryBufferRef() const {
   ErrorOr<StringRef> NameOrErr = getName();
   if (std::error_code EC = NameOrErr.getError())
     return EC;
   StringRef Name = NameOrErr.get();
-  SmallString<128> Path;
-  std::unique_ptr<MemoryBuffer> Ret(MemoryBuffer::getMemBuffer(
-      getBuffer(),
-      FullPath
-          ? (Twine(Parent->getFileName()) + "(" + Name + ")").toStringRef(Path)
-          : Name,
-      false));
-  return std::move(Ret);
+  return MemoryBufferRef(getBuffer(), Name);
 }
 
 ErrorOr<std::unique_ptr<Binary>>
 Archive::Child::getAsBinary(LLVMContext *Context) const {
-  std::unique_ptr<Binary> ret;
-  ErrorOr<std::unique_ptr<MemoryBuffer>> BuffOrErr = getMemoryBuffer();
+  ErrorOr<MemoryBufferRef> BuffOrErr = getMemoryBufferRef();
   if (std::error_code EC = BuffOrErr.getError())
     return EC;
-  return createBinary(BuffOrErr.get().release(), Context);
+
+  return createBinary(BuffOrErr.get(), Context);
 }
 
-ErrorOr<Archive*> Archive::create(MemoryBuffer *Source) {
+ErrorOr<std::unique_ptr<Archive>> Archive::create(MemoryBufferRef Source) {
   std::error_code EC;
   std::unique_ptr<Archive> Ret(new Archive(Source, EC));
   if (EC)
     return EC;
-  return Ret.release();
+  return std::move(Ret);
 }
 
-Archive::Archive(MemoryBuffer *source, std::error_code &ec)
-    : Binary(Binary::ID_Archive, source), SymbolTable(child_end()) {
+Archive::Archive(MemoryBufferRef Source, std::error_code &ec)
+    : Binary(Binary::ID_Archive, Source), SymbolTable(child_end()) {
   // Check for sufficient magic.
-  assert(source);
-  if (source->getBufferSize() < 8 ||
-      StringRef(source->getBufferStart(), 8) != Magic) {
+  if (Data.getBufferSize() < 8 ||
+      StringRef(Data.getBufferStart(), 8) != Magic) {
     ec = object_error::invalid_file_type;
     return;
   }
@@ -311,13 +302,13 @@ Archive::Archive(MemoryBuffer *source, std::error_code &ec)
 }
 
 Archive::child_iterator Archive::child_begin(bool SkipInternal) const {
-  if (Data->getBufferSize() == 8) // empty archive.
+  if (Data.getBufferSize() == 8) // empty archive.
     return child_end();
 
   if (SkipInternal)
     return FirstRegular;
 
-  const char *Loc = Data->getBufferStart() + strlen(Magic);
+  const char *Loc = Data.getBufferStart() + strlen(Magic);
   Child c(this, Loc);
   return c;
 }
@@ -338,7 +329,14 @@ ErrorOr<Archive::child_iterator> Archive::Symbol::getMember() const {
     Offset = *(reinterpret_cast<const support::ubig32_t*>(Offsets)
                + SymbolIndex);
   } else if (Parent->kind() == K_BSD) {
-    llvm_unreachable("BSD format is not supported");
+    // The SymbolIndex is an index into the ranlib structs that start at
+    // Offsets (the first uint32_t is the number of bytes of the ranlib
+    // structs).  The ranlib structs are a pair of uint32_t's the first
+    // being a string table offset and the second being the offset into
+    // the archive of the member that defines the symbol.  Which is what
+    // is needed here.
+    Offset = *(reinterpret_cast<const support::ulittle32_t *>(Offsets) +
+               (SymbolIndex * 2) + 1);
   } else {
     uint32_t MemberCount = *reinterpret_cast<const support::ulittle32_t*>(Buf);
     
@@ -376,9 +374,43 @@ ErrorOr<Archive::child_iterator> Archive::Symbol::getMember() const {
 
 Archive::Symbol Archive::Symbol::getNext() const {
   Symbol t(*this);
-  // Go to one past next null.
-  t.StringIndex =
-      Parent->SymbolTable->getBuffer().find('\0', t.StringIndex) + 1;
+  if (Parent->kind() == K_BSD) {
+    // t.StringIndex is an offset from the start of the __.SYMDEF or
+    // "__.SYMDEF SORTED" member into the string table for the ranlib
+    // struct indexed by t.SymbolIndex .  To change t.StringIndex to the
+    // offset in the string table for t.SymbolIndex+1 we subtract the
+    // its offset from the start of the string table for t.SymbolIndex
+    // and add the offset of the string table for t.SymbolIndex+1.
+
+    // The __.SYMDEF or "__.SYMDEF SORTED" member starts with a uint32_t
+    // which is the number of bytes of ranlib structs that follow.  The ranlib
+    // structs are a pair of uint32_t's the first being a string table offset
+    // and the second being the offset into the archive of the member that
+    // define the symbol. After that the next uint32_t is the byte count of
+    // the string table followed by the string table.
+    const char *Buf = Parent->SymbolTable->getBuffer().begin();
+    uint32_t RanlibCount = 0;
+    RanlibCount = (*reinterpret_cast<const support::ulittle32_t *>(Buf)) /
+                  (sizeof(uint32_t) * 2);
+    // If t.SymbolIndex + 1 will be past the count of symbols (the RanlibCount)
+    // don't change the t.StringIndex as we don't want to reference a ranlib
+    // past RanlibCount.
+    if (t.SymbolIndex + 1 < RanlibCount) {
+      const char *Ranlibs = Buf + 4;
+      uint32_t CurRanStrx = 0;
+      uint32_t NextRanStrx = 0;
+      CurRanStrx = *(reinterpret_cast<const support::ulittle32_t *>(Ranlibs) +
+                     (t.SymbolIndex * 2));
+      NextRanStrx = *(reinterpret_cast<const support::ulittle32_t *>(Ranlibs) +
+                      ((t.SymbolIndex + 1) * 2));
+      t.StringIndex -= CurRanStrx;
+      t.StringIndex += NextRanStrx;
+    }
+  } else {
+    // Go to one past next null.
+    t.StringIndex =
+        Parent->SymbolTable->getBuffer().find('\0', t.StringIndex) + 1;
+  }
   ++t.SymbolIndex;
   return t;
 }
@@ -393,7 +425,22 @@ Archive::symbol_iterator Archive::symbol_begin() const {
     symbol_count = *reinterpret_cast<const support::ubig32_t*>(buf);
     buf += sizeof(uint32_t) + (symbol_count * (sizeof(uint32_t)));
   } else if (kind() == K_BSD) {
-    llvm_unreachable("BSD archive format is not supported");
+    // The __.SYMDEF or "__.SYMDEF SORTED" member starts with a uint32_t
+    // which is the number of bytes of ranlib structs that follow.  The ranlib
+    // structs are a pair of uint32_t's the first being a string table offset
+    // and the second being the offset into the archive of the member that
+    // define the symbol. After that the next uint32_t is the byte count of
+    // the string table followed by the string table.
+    uint32_t ranlib_count = 0;
+    ranlib_count = (*reinterpret_cast<const support::ulittle32_t *>(buf)) /
+                   (sizeof(uint32_t) * 2);
+    const char *ranlibs = buf + 4;
+    uint32_t ran_strx = 0;
+    ran_strx = *(reinterpret_cast<const support::ulittle32_t *>(ranlibs));
+    buf += sizeof(uint32_t) + (ranlib_count * (2 * (sizeof(uint32_t))));
+    // Skip the byte count of the string table.
+    buf += sizeof(uint32_t);
+    buf += ran_strx;
   } else {
     uint32_t member_count = 0;
     uint32_t symbol_count = 0;
@@ -415,7 +462,8 @@ Archive::symbol_iterator Archive::symbol_end() const {
   if (kind() == K_GNU) {
     symbol_count = *reinterpret_cast<const support::ubig32_t*>(buf);
   } else if (kind() == K_BSD) {
-    llvm_unreachable("BSD archive format is not supported");
+    symbol_count = (*reinterpret_cast<const support::ulittle32_t *>(buf)) /
+                   (sizeof(uint32_t) * 2);
   } else {
     uint32_t member_count = 0;
     member_count = *reinterpret_cast<const support::ulittle32_t*>(buf);

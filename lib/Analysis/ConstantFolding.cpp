@@ -240,7 +240,8 @@ static bool IsConstantOffsetFromGlobal(Constant *C, GlobalValue *&GV,
 
   // Look through ptr->int and ptr->ptr casts.
   if (CE->getOpcode() == Instruction::PtrToInt ||
-      CE->getOpcode() == Instruction::BitCast)
+      CE->getOpcode() == Instruction::BitCast ||
+      CE->getOpcode() == Instruction::AddrSpaceCast)
     return IsConstantOffsetFromGlobal(CE->getOperand(0), GV, Offset, TD);
 
   // i32* getelementptr ([5 x i32]* @a, i32 0, i32 5)
@@ -966,7 +967,7 @@ Constant *llvm::ConstantFoldInstruction(Instruction *I,
 static Constant *
 ConstantFoldConstantExpressionImpl(const ConstantExpr *CE, const DataLayout *TD,
                                    const TargetLibraryInfo *TLI,
-                                   SmallPtrSet<ConstantExpr *, 4> &FoldedOps) {
+                                   SmallPtrSetImpl<ConstantExpr *> &FoldedOps) {
   SmallVector<Constant *, 8> Ops;
   for (User::const_op_iterator i = CE->op_begin(), e = CE->op_end(); i != e;
        ++i) {

@@ -57,7 +57,6 @@ enum LLVMConstants : uint32_t {
   DW_TAG_user_base = 0x1000, // Recommended base for user tags.
 
   DWARF_VERSION = 4,       // Default dwarf version we output.
-  DW_CIE_VERSION = 1,      // Common frame information version.
   DW_PUBTYPES_VERSION = 2, // Section version number for .debug_pubtypes.
   DW_PUBNAMES_VERSION = 2, // Section version number for .debug_pubnames.
   DW_ARANGES_VERSION = 2   // Section version number for .debug_aranges.
@@ -950,6 +949,10 @@ private:
     LINKAGE_MASK = 1 << LINKAGE_OFFSET
   };
 };
+
+/// Returns the symbolic string representing Val when used as a value
+/// for attribute Attr.
+const char *AttributeValueString(uint16_t Attr, unsigned Val);
 
 } // End of namespace dwarf
 

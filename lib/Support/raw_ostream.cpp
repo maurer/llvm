@@ -426,20 +426,14 @@ void format_object_base::home() {
 //  raw_fd_ostream
 //===----------------------------------------------------------------------===//
 
-/// raw_fd_ostream - Open the specified file for writing. If an error
-/// occurs, information about the error is put into ErrorInfo, and the
-/// stream should be immediately destroyed; the string will be empty
-/// if no error occurred.
-raw_fd_ostream::raw_fd_ostream(const char *Filename, std::string &ErrorInfo,
+raw_fd_ostream::raw_fd_ostream(StringRef Filename, std::error_code &EC,
                                sys::fs::OpenFlags Flags)
     : Error(false), UseAtomicWrites(false), pos(0) {
-  assert(Filename && "Filename is null");
-  ErrorInfo.clear();
-
+  EC = std::error_code();
   // Handle "-" as stdout. Note that when we do this, we consider ourself
   // the owner of stdout. This means that we can do things like close the
   // file descriptor when we're done and set the "binary" flag globally.
-  if (Filename[0] == '-' && Filename[1] == 0) {
+  if (Filename == "-") {
     FD = STDOUT_FILENO;
     // If user requested binary then put stdout into binary mode if
     // possible.
@@ -450,11 +444,9 @@ raw_fd_ostream::raw_fd_ostream(const char *Filename, std::string &ErrorInfo,
     return;
   }
 
-  std::error_code EC = sys::fs::openFileForWrite(Filename, FD, Flags);
+  EC = sys::fs::openFileForWrite(Filename, FD, Flags);
 
   if (EC) {
-    ErrorInfo = "Error opening output file '" + std::string(Filename) + "': " +
-                EC.message();
     ShouldClose = false;
     return;
   }
@@ -660,7 +652,7 @@ bool raw_fd_ostream::has_colors() const {
 /// Use it like: outs() << "foo" << "bar";
 raw_ostream &llvm::outs() {
   // Set buffer settings to model stdout behavior.
-  // Delete the file descriptor when the program exists, forcing error
+  // Delete the file descriptor when the program exits, forcing error
   // detection. If you don't want this behavior, don't use outs().
   static raw_fd_ostream S(STDOUT_FILENO, true);
   return S;
@@ -729,24 +721,17 @@ void raw_svector_ostream::resync() {
 }
 
 void raw_svector_ostream::write_impl(const char *Ptr, size_t Size) {
-  // If we're writing bytes from the end of the buffer into the smallvector, we
-  // don't need to copy the bytes, just commit the bytes because they are
-  // already in the right place.
   if (Ptr == OS.end()) {
-    assert(OS.size() + Size <= OS.capacity() && "Invalid write_impl() call!");
-    OS.set_size(OS.size() + Size);
+    // Grow the buffer to include the scratch area without copying.
+    size_t NewSize = OS.size() + Size;
+    assert(NewSize <= OS.capacity() && "Invalid write_impl() call!");
+    OS.set_size(NewSize);
   } else {
-    assert(GetNumBytesInBuffer() == 0 &&
-           "Should be writing from buffer if some bytes in it");
-    // Otherwise, do copy the bytes.
-    OS.append(Ptr, Ptr+Size);
+    assert(!GetNumBytesInBuffer());
+    OS.append(Ptr, Ptr + Size);
   }
 
-  // Grow the vector if necessary.
-  if (OS.capacity() - OS.size() < 64)
-    OS.reserve(OS.capacity() * 2);
-
-  // Update the buffer position.
+  OS.reserve(OS.size() + 64);
   SetBuffer(OS.end(), OS.capacity() - OS.size());
 }
 

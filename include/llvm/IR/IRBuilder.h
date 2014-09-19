@@ -327,6 +327,11 @@ public:
     return Type::getIntNTy(Context, N);
   }
 
+  /// \brief Fetch the type representing a 16-bit floating point value.
+  Type *getHalfTy() {
+    return Type::getHalfTy(Context);
+  }
+
   /// \brief Fetch the type representing a 32-bit floating point value.
   Type *getFloatTy() {
     return Type::getFloatTy(Context);
@@ -359,43 +364,60 @@ public:
   /// \brief Create and insert a memset to the specified pointer and the
   /// specified value.
   ///
-  /// If the pointer isn't an i8*, it will be converted.  If a TBAA tag is
-  /// specified, it will be added to the instruction.
+  /// If the pointer isn't an i8*, it will be converted. If a TBAA tag is
+  /// specified, it will be added to the instruction. Likewise with alias.scope
+  /// and noalias tags.
   CallInst *CreateMemSet(Value *Ptr, Value *Val, uint64_t Size, unsigned Align,
-                         bool isVolatile = false, MDNode *TBAATag = nullptr) {
-    return CreateMemSet(Ptr, Val, getInt64(Size), Align, isVolatile, TBAATag);
+                         bool isVolatile = false, MDNode *TBAATag = nullptr,
+                         MDNode *ScopeTag = nullptr,
+                         MDNode *NoAliasTag = nullptr) {
+    return CreateMemSet(Ptr, Val, getInt64(Size), Align, isVolatile,
+                        TBAATag, ScopeTag, NoAliasTag);
   }
 
   CallInst *CreateMemSet(Value *Ptr, Value *Val, Value *Size, unsigned Align,
-                         bool isVolatile = false, MDNode *TBAATag = nullptr);
+                         bool isVolatile = false, MDNode *TBAATag = nullptr,
+                         MDNode *ScopeTag = nullptr,
+                         MDNode *NoAliasTag = nullptr);
 
   /// \brief Create and insert a memcpy between the specified pointers.
   ///
   /// If the pointers aren't i8*, they will be converted.  If a TBAA tag is
-  /// specified, it will be added to the instruction.
+  /// specified, it will be added to the instruction. Likewise with alias.scope
+  /// and noalias tags.
   CallInst *CreateMemCpy(Value *Dst, Value *Src, uint64_t Size, unsigned Align,
                          bool isVolatile = false, MDNode *TBAATag = nullptr,
-                         MDNode *TBAAStructTag = nullptr) {
+                         MDNode *TBAAStructTag = nullptr,
+                         MDNode *ScopeTag = nullptr,
+                         MDNode *NoAliasTag = nullptr) {
     return CreateMemCpy(Dst, Src, getInt64(Size), Align, isVolatile, TBAATag,
-                        TBAAStructTag);
+                        TBAAStructTag, ScopeTag, NoAliasTag);
   }
 
   CallInst *CreateMemCpy(Value *Dst, Value *Src, Value *Size, unsigned Align,
                          bool isVolatile = false, MDNode *TBAATag = nullptr,
-                         MDNode *TBAAStructTag = nullptr);
+                         MDNode *TBAAStructTag = nullptr,
+                         MDNode *ScopeTag = nullptr,
+                         MDNode *NoAliasTag = nullptr);
 
   /// \brief Create and insert a memmove between the specified
   /// pointers.
   ///
   /// If the pointers aren't i8*, they will be converted.  If a TBAA tag is
-  /// specified, it will be added to the instruction.
+  /// specified, it will be added to the instruction. Likewise with alias.scope
+  /// and noalias tags.
   CallInst *CreateMemMove(Value *Dst, Value *Src, uint64_t Size, unsigned Align,
-                          bool isVolatile = false, MDNode *TBAATag = nullptr) {
-    return CreateMemMove(Dst, Src, getInt64(Size), Align, isVolatile, TBAATag);
+                          bool isVolatile = false, MDNode *TBAATag = nullptr,
+                          MDNode *ScopeTag = nullptr,
+                          MDNode *NoAliasTag = nullptr) {
+    return CreateMemMove(Dst, Src, getInt64(Size), Align, isVolatile,
+                         TBAATag, ScopeTag, NoAliasTag);
   }
 
   CallInst *CreateMemMove(Value *Dst, Value *Src, Value *Size, unsigned Align,
-                          bool isVolatile = false, MDNode *TBAATag = nullptr);
+                          bool isVolatile = false, MDNode *TBAATag = nullptr,
+                          MDNode *ScopeTag = nullptr,
+                          MDNode *NoAliasTag = nullptr);
 
   /// \brief Create a lifetime.start intrinsic.
   ///
@@ -424,7 +446,7 @@ private:
 /// The first template argument handles whether or not to preserve names in the
 /// final instruction output. This defaults to on.  The second template argument
 /// specifies a class to use for creating constants.  This defaults to creating
-/// minimally folded constants.  The fourth template argument allows clients to
+/// minimally folded constants.  The third template argument allows clients to
 /// specify custom insertion hooks that are called on every newly created
 /// insertion.
 template<bool preserveNames = true, typename T = ConstantFolder,
@@ -565,8 +587,7 @@ public:
 
   InvokeInst *CreateInvoke(Value *Callee, BasicBlock *NormalDest,
                            BasicBlock *UnwindDest, const Twine &Name = "") {
-    return Insert(InvokeInst::Create(Callee, NormalDest, UnwindDest,
-                                     ArrayRef<Value *>()),
+    return Insert(InvokeInst::Create(Callee, NormalDest, UnwindDest, None),
                   Name);
   }
   InvokeInst *CreateInvoke(Value *Callee, BasicBlock *NormalDest,
@@ -1198,6 +1219,21 @@ public:
       return Insert(Folder.CreatePointerCast(VC, DestTy), Name);
     return Insert(CastInst::CreatePointerCast(V, DestTy), Name);
   }
+
+  Value *CreatePointerBitCastOrAddrSpaceCast(Value *V, Type *DestTy,
+                                             const Twine &Name = "") {
+    if (V->getType() == DestTy)
+      return V;
+
+    if (Constant *VC = dyn_cast<Constant>(V)) {
+      return Insert(Folder.CreatePointerBitCastOrAddrSpaceCast(VC, DestTy),
+                    Name);
+    }
+
+    return Insert(CastInst::CreatePointerBitCastOrAddrSpaceCast(V, DestTy),
+                  Name);
+  }
+
   Value *CreateIntCast(Value *V, Type *DestTy, bool isSigned,
                        const Twine &Name = "") {
     if (V->getType() == DestTy)

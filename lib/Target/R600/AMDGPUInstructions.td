@@ -34,8 +34,14 @@ class AMDGPUShaderInst <dag outs, dag ins, string asm, list<dag> pattern>
 
 }
 
+def FP32Denormals : Predicate<"Subtarget.hasFP32Denormals()">;
+def FP64Denormals : Predicate<"Subtarget.hasFP64Denormals()">;
+def UnsafeFPMath : Predicate<"TM.Options.UnsafeFPMath">;
+
 def InstFlag : OperandWithDefaultOps <i32, (ops (i32 0))>;
 def ADDRIndirect : ComplexPattern<iPTR, 2, "SelectADDRIndirect", [], []>;
+
+let OperandType = "OPERAND_IMMEDIATE" in {
 
 def u32imm : Operand<i32> {
   let PrintMethod = "printU32ImmOperand";
@@ -48,6 +54,8 @@ def u16imm : Operand<i16> {
 def u8imm : Operand<i8> {
   let PrintMethod = "printU8ImmOperand";
 }
+
+} // End OperandType = "OPERAND_IMMEDIATE"
 
 //===--------------------------------------------------------------------===//
 // Custom Operands
@@ -125,12 +133,34 @@ def COND_NE : PatLeaf <
 
 def COND_NULL : PatLeaf <
   (cond),
-  [{return false;}]
+  [{(void)N; return false;}]
 >;
 
 //===----------------------------------------------------------------------===//
 // Load/Store Pattern Fragments
 //===----------------------------------------------------------------------===//
+
+class PrivateMemOp <dag ops, dag frag> : PatFrag <ops, frag, [{
+  return cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::PRIVATE_ADDRESS;
+}]>;
+
+class PrivateLoad <SDPatternOperator op> : PrivateMemOp <
+  (ops node:$ptr), (op node:$ptr)
+>;
+
+class PrivateStore <SDPatternOperator op> : PrivateMemOp <
+  (ops node:$value, node:$ptr), (op node:$value, node:$ptr)
+>;
+
+def extloadi8_private : PrivateLoad <extloadi8>;
+def sextloadi8_private : PrivateLoad <sextloadi8>;
+def extloadi16_private : PrivateLoad <extloadi16>;
+def sextloadi16_private : PrivateLoad <sextloadi16>;
+def load_private : PrivateLoad <load>;
+
+def truncstorei8_private : PrivateStore <truncstorei8>;
+def truncstorei16_private : PrivateStore <truncstorei16>;
+def store_private : PrivateStore <store>;
 
 def global_store : PatFrag<(ops node:$val, node:$ptr),
     (store node:$val, node:$ptr), [{
@@ -165,6 +195,14 @@ def sextloadi8_global : PatFrag<(ops node:$ptr), (sextloadi8 node:$ptr), [{
     return isGlobalLoad(dyn_cast<LoadSDNode>(N));
 }]>;
 
+def az_extloadi8_flat : PatFrag<(ops node:$ptr), (az_extloadi8 node:$ptr), [{
+    return isFlatLoad(dyn_cast<LoadSDNode>(N));
+}]>;
+
+def sextloadi8_flat : PatFrag<(ops node:$ptr), (sextloadi8 node:$ptr), [{
+    return isFlatLoad(dyn_cast<LoadSDNode>(N));
+}]>;
+
 def az_extloadi8_constant : PatFrag<(ops node:$ptr), (az_extloadi8 node:$ptr), [{
     return isConstantLoad(dyn_cast<LoadSDNode>(N), -1);
 }]>;
@@ -193,6 +231,14 @@ def sextloadi16_global : PatFrag<(ops node:$ptr), (sextloadi16 node:$ptr), [{
     return isGlobalLoad(dyn_cast<LoadSDNode>(N));
 }]>;
 
+def az_extloadi16_flat : PatFrag<(ops node:$ptr), (az_extloadi16 node:$ptr), [{
+    return isFlatLoad(dyn_cast<LoadSDNode>(N));
+}]>;
+
+def sextloadi16_flat : PatFrag<(ops node:$ptr), (sextloadi16 node:$ptr), [{
+    return isFlatLoad(dyn_cast<LoadSDNode>(N));
+}]>;
+
 def az_extloadi16_constant : PatFrag<(ops node:$ptr), (az_extloadi16 node:$ptr), [{
     return isConstantLoad(dyn_cast<LoadSDNode>(N), -1);
 }]>;
@@ -218,6 +264,11 @@ def az_extloadi32_global : PatFrag<(ops node:$ptr),
   return isGlobalLoad(dyn_cast<LoadSDNode>(N));
 }]>;
 
+def az_extloadi32_flat : PatFrag<(ops node:$ptr),
+                                   (az_extloadi32 node:$ptr), [{
+  return isFlatLoad(dyn_cast<LoadSDNode>(N));
+}]>;
+
 def az_extloadi32_constant : PatFrag<(ops node:$ptr),
                                      (az_extloadi32 node:$ptr), [{
   return isConstantLoad(dyn_cast<LoadSDNode>(N), -1);
@@ -231,6 +282,16 @@ def truncstorei8_global : PatFrag<(ops node:$val, node:$ptr),
 def truncstorei16_global : PatFrag<(ops node:$val, node:$ptr),
                                   (truncstorei16 node:$val, node:$ptr), [{
   return isGlobalStore(dyn_cast<StoreSDNode>(N));
+}]>;
+
+def truncstorei8_flat : PatFrag<(ops node:$val, node:$ptr),
+                                  (truncstorei8 node:$val, node:$ptr), [{
+  return isFlatStore(dyn_cast<StoreSDNode>(N));
+}]>;
+
+def truncstorei16_flat : PatFrag<(ops node:$val, node:$ptr),
+                                  (truncstorei16 node:$val, node:$ptr), [{
+  return isFlatStore(dyn_cast<StoreSDNode>(N));
 }]>;
 
 def local_store : PatFrag<(ops node:$val, node:$ptr),
@@ -252,6 +313,17 @@ def local_load : PatFrag<(ops node:$ptr), (load node:$ptr), [{
     return isLocalLoad(dyn_cast<LoadSDNode>(N));
 }]>;
 
+class Aligned8Bytes <dag ops, dag frag> : PatFrag <ops, frag, [{
+    return cast<MemSDNode>(N)->getAlignment() % 8 == 0;
+}]>;
+
+def local_load_aligned8bytes : Aligned8Bytes <
+  (ops node:$ptr), (local_load node:$ptr)
+>;
+
+def local_store_aligned8bytes : Aligned8Bytes <
+  (ops node:$val, node:$ptr), (local_store node:$val, node:$ptr)
+>;
 
 class local_binary_atomic_op<SDNode atomic_op> :
   PatFrag<(ops node:$ptr, node:$value),
@@ -277,6 +349,7 @@ def mskor_global : PatFrag<(ops node:$val, node:$ptr),
   return dyn_cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS;
 }]>;
 
+
 def atomic_cmp_swap_32_local :
   PatFrag<(ops node:$ptr, node:$cmp, node:$swap),
           (atomic_cmp_swap node:$ptr, node:$cmp, node:$swap), [{
@@ -293,6 +366,28 @@ def atomic_cmp_swap_64_local :
          AN->getAddressSpace() == AMDGPUAS::LOCAL_ADDRESS;
 }]>;
 
+def flat_load : PatFrag<(ops node:$ptr), (load node:$ptr), [{
+    return isFlatLoad(dyn_cast<LoadSDNode>(N));
+}]>;
+
+def flat_store : PatFrag<(ops node:$val, node:$ptr),
+                         (store node:$val, node:$ptr), [{
+  return isFlatStore(dyn_cast<StoreSDNode>(N));
+}]>;
+
+def mskor_flat : PatFrag<(ops node:$val, node:$ptr),
+                            (AMDGPUstore_mskor node:$val, node:$ptr), [{
+  return dyn_cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::FLAT_ADDRESS;
+}]>;
+
+//===----------------------------------------------------------------------===//
+// Misc Pattern Fragments
+//===----------------------------------------------------------------------===//
+
+def fmad : PatFrag <
+  (ops node:$src0, node:$src1, node:$src2),
+  (fadd (fmul node:$src0, node:$src1), node:$src2)
+>;
 
 class Constants {
 int TWO_PI = 0x40c90fdb;
@@ -516,6 +611,23 @@ multiclass Expand24UBitOps<Instruction MulInst, Instruction AddInst> {
   def _expand_umul24 : Pat <
     (AMDGPUmul_u24 i32:$src0, i32:$src1),
     (MulInst $src0, $src1)
+  >;
+}
+
+class RcpPat<Instruction RcpInst, ValueType vt> : Pat <
+  (fdiv FP_ONE, vt:$src),
+  (RcpInst $src)
+>;
+
+multiclass RsqPat<Instruction RsqInst, ValueType vt> {
+  def : Pat <
+    (fdiv FP_ONE, (fsqrt vt:$src)),
+    (RsqInst $src)
+  >;
+
+  def : Pat <
+    (AMDGPUrcp (fsqrt vt:$src)),
+    (RsqInst $src)
   >;
 }
 

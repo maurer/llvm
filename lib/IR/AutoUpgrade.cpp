@@ -43,6 +43,22 @@ static bool UpgradeSSE41Function(Function* F, Intrinsic::ID IID,
   return true;
 }
 
+// Upgrade the declarations of intrinsic functions whose 8-bit immediate mask
+// arguments have changed their type from i32 to i8.
+static bool UpgradeX86IntrinsicsWith8BitMask(Function *F, Intrinsic::ID IID,
+                                             Function *&NewFn) {
+  // Check that the last argument is an i32.
+  Type *LastArgType = F->getFunctionType()->getParamType(
+     F->getFunctionType()->getNumParams() - 1);
+  if (!LastArgType->isIntegerTy(32))
+    return false;
+
+  // Move this function aside and map down.
+  F->setName(F->getName() + ".old");
+  NewFn = Intrinsic::getDeclaration(F->getParent(), IID);
+  return true;
+}
+
 static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
   assert(F && "Illegal to upgrade a non-existent Function.");
 
@@ -130,6 +146,51 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       if (Name == "x86.sse41.ptestnzc")
         return UpgradeSSE41Function(F, Intrinsic::x86_sse41_ptestnzc, NewFn);
     }
+    // Several blend and other instructions with maskes used the wrong number of
+    // bits.
+    if (Name == "x86.sse41.pblendw")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_pblendw,
+                                              NewFn);
+    if (Name == "x86.sse41.blendpd")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_blendpd,
+                                              NewFn);
+    if (Name == "x86.sse41.blendps")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_blendps,
+                                              NewFn);
+    if (Name == "x86.sse41.insertps")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_insertps,
+                                              NewFn);
+    if (Name == "x86.sse41.dppd")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_dppd,
+                                              NewFn);
+    if (Name == "x86.sse41.dpps")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_dpps,
+                                              NewFn);
+    if (Name == "x86.sse41.mpsadbw")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_sse41_mpsadbw,
+                                              NewFn);
+    if (Name == "x86.avx.blend.pd.256")
+      return UpgradeX86IntrinsicsWith8BitMask(
+          F, Intrinsic::x86_avx_blend_pd_256, NewFn);
+    if (Name == "x86.avx.blend.ps.256")
+      return UpgradeX86IntrinsicsWith8BitMask(
+          F, Intrinsic::x86_avx_blend_ps_256, NewFn);
+    if (Name == "x86.avx.dp.ps.256")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_avx_dp_ps_256,
+                                              NewFn);
+    if (Name == "x86.avx2.pblendw")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_avx2_pblendw,
+                                              NewFn);
+    if (Name == "x86.avx2.pblendd.128")
+      return UpgradeX86IntrinsicsWith8BitMask(
+          F, Intrinsic::x86_avx2_pblendd_128, NewFn);
+    if (Name == "x86.avx2.pblendd.256")
+      return UpgradeX86IntrinsicsWith8BitMask(
+          F, Intrinsic::x86_avx2_pblendd_256, NewFn);
+    if (Name == "x86.avx2.mpsadbw")
+      return UpgradeX86IntrinsicsWith8BitMask(F, Intrinsic::x86_avx2_mpsadbw,
+                                              NewFn);
+
     // frcz.ss/sd may need to have an argument dropped
     if (Name.startswith("x86.xop.vfrcz.ss") && F->arg_size() == 2) {
       F->setName(Name + ".old");
@@ -173,62 +234,7 @@ bool llvm::UpgradeIntrinsicFunction(Function *F, Function *&NewFn) {
   return Upgraded;
 }
 
-static bool UpgradeGlobalStructors(GlobalVariable *GV) {
-  ArrayType *ATy = dyn_cast<ArrayType>(GV->getType()->getElementType());
-  StructType *OldTy =
-      ATy ? dyn_cast<StructType>(ATy->getElementType()) : nullptr;
-
-  // Only upgrade an array of a two field struct with the appropriate field
-  // types.
-  if (!OldTy || OldTy->getNumElements() != 2)
-    return false;
-
-  // Get the upgraded 3 element type.
-  PointerType *VoidPtrTy = Type::getInt8Ty(GV->getContext())->getPointerTo();
-  Type *Tys[3] = {
-    OldTy->getElementType(0),
-    OldTy->getElementType(1),
-    VoidPtrTy
-  };
-  StructType *NewTy =
-      StructType::get(GV->getContext(), Tys, /*isPacked=*/false);
-
-  // Build new constants with a null third field filled in.
-  Constant *OldInitC = GV->getInitializer();
-  ConstantArray *OldInit = dyn_cast<ConstantArray>(OldInitC);
-  if (!OldInit && !isa<ConstantAggregateZero>(OldInitC))
-    return false;
-  std::vector<Constant *> Initializers;
-  if (OldInit) {
-    for (Use &U : OldInit->operands()) {
-      ConstantStruct *Init = cast<ConstantStruct>(&U);
-      Constant *NewInit =
-        ConstantStruct::get(NewTy, Init->getOperand(0), Init->getOperand(1),
-                            Constant::getNullValue(VoidPtrTy), nullptr);
-      Initializers.push_back(NewInit);
-    }
-  }
-  assert(Initializers.size() == ATy->getNumElements());
-
-  // Replace the old GV with a new one.
-  ATy = ArrayType::get(NewTy, Initializers.size());
-  Constant *NewInit = ConstantArray::get(ATy, Initializers);
-  GlobalVariable *NewGV = new GlobalVariable(
-      *GV->getParent(), ATy, GV->isConstant(), GV->getLinkage(), NewInit, "",
-      GV, GV->getThreadLocalMode(), GV->getType()->getAddressSpace(),
-      GV->isExternallyInitialized());
-  NewGV->copyAttributesFrom(GV);
-  NewGV->takeName(GV);
-  assert(GV->use_empty() && "program cannot use initializer list");
-  GV->eraseFromParent();
-  return true;
-}
-
 bool llvm::UpgradeGlobalVariable(GlobalVariable *GV) {
-  if (GV->getName() == "llvm.global_ctors" ||
-      GV->getName() == "llvm.global_dtors")
-    return UpgradeGlobalStructors(GV);
-
   // Nothing to do yet.
   return false;
 }
@@ -468,6 +474,34 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     CI->eraseFromParent();
     return;
   }
+
+  case Intrinsic::x86_sse41_pblendw:
+  case Intrinsic::x86_sse41_blendpd:
+  case Intrinsic::x86_sse41_blendps:
+  case Intrinsic::x86_sse41_insertps:
+  case Intrinsic::x86_sse41_dppd:
+  case Intrinsic::x86_sse41_dpps:
+  case Intrinsic::x86_sse41_mpsadbw:
+  case Intrinsic::x86_avx_blend_pd_256:
+  case Intrinsic::x86_avx_blend_ps_256:
+  case Intrinsic::x86_avx_dp_ps_256:
+  case Intrinsic::x86_avx2_pblendw:
+  case Intrinsic::x86_avx2_pblendd_128:
+  case Intrinsic::x86_avx2_pblendd_256:
+  case Intrinsic::x86_avx2_mpsadbw: {
+    // Need to truncate the last argument from i32 to i8 -- this argument models
+    // an inherently 8-bit immediate operand to these x86 instructions.
+    SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
+                                 CI->arg_operands().end());
+
+    // Replace the last argument with a trunc.
+    Args.back() = Builder.CreateTrunc(Args.back(), Type::getInt8Ty(C), "trunc");
+
+    CallInst *NewCall = Builder.CreateCall(NewFn, Args);
+    CI->replaceAllUsesWith(NewCall);
+    CI->eraseFromParent();
+    return;
+  }
   }
 }
 
@@ -576,4 +610,13 @@ bool llvm::UpgradeDebugInfo(Module &M) {
     M.getContext().diagnose(DiagVersion);
   }
   return RetCode;
+}
+
+void llvm::UpgradeMDStringConstant(std::string &String) {
+  const std::string OldPrefix = "llvm.vectorizer.";
+  if (String == "llvm.vectorizer.unroll") {
+    String = "llvm.loop.interleave.count";
+  } else if (String.find(OldPrefix) == 0) {
+    String.replace(0, OldPrefix.size(), "llvm.loop.vectorize.");
+  }
 }

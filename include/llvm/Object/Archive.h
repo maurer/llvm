@@ -89,8 +89,7 @@ public:
       return StringRef(Data.data() + StartOfFile, getSize());
     }
 
-    ErrorOr<std::unique_ptr<MemoryBuffer>>
-    getMemoryBuffer(bool FullPath = false) const;
+    ErrorOr<MemoryBufferRef> getMemoryBufferRef() const;
 
     ErrorOr<std::unique_ptr<Binary>>
     getAsBinary(LLVMContext *Context = nullptr) const;
@@ -164,8 +163,8 @@ public:
     }
   };
 
-  Archive(MemoryBuffer *source, std::error_code &ec);
-  static ErrorOr<Archive *> create(MemoryBuffer *Source);
+  Archive(MemoryBufferRef Source, std::error_code &EC);
+  static ErrorOr<std::unique_ptr<Archive>> create(MemoryBufferRef Source);
 
   enum Kind {
     K_GNU,

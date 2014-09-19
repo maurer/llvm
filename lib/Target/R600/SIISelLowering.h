@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef SIISELLOWERING_H
-#define SIISELLOWERING_H
+#ifndef LLVM_LIB_TARGET_R600_SIISELLOWERING_H
+#define LLVM_LIB_TARGET_R600_SIISELLOWERING_H
 
 #include "AMDGPUISelLowering.h"
 #include "SIInstrInfo.h"
@@ -25,9 +25,20 @@ class SITargetLowering : public AMDGPUTargetLowering {
                          SDValue Chain, unsigned Offset, bool Signed) const;
   SDValue LowerSampleIntrinsic(unsigned Opcode, const SDValue &Op,
                                SelectionDAG &DAG) const;
+  SDValue LowerGlobalAddress(AMDGPUMachineFunction *MFI, SDValue Op,
+                             SelectionDAG &DAG) const override;
+
+  SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerINTRINSIC_VOID(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerFrameIndex(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerLOAD(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSELECT(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerFastFDIV(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerFDIV32(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerFDIV64(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerFDIV(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSTORE(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerTrig(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerBRCOND(SDValue Op, SelectionDAG &DAG) const;
 
   bool foldImm(SDValue &Operand, int32_t &Immediate,
@@ -39,18 +50,34 @@ class SITargetLowering : public AMDGPUTargetLowering {
   void ensureSRegLimit(SelectionDAG &DAG, SDValue &Operand,
                        unsigned RegClass, bool &ScalarSlotUsed) const;
 
-  SDNode *foldOperands(MachineSDNode *N, SelectionDAG &DAG) const;
+  SDNode *legalizeOperands(MachineSDNode *N, SelectionDAG &DAG) const;
   void adjustWritemask(MachineSDNode *&N, SelectionDAG &DAG) const;
   MachineSDNode *AdjustRegClass(MachineSDNode *N, SelectionDAG &DAG) const;
 
   static SDValue performUCharToFloatCombine(SDNode *N,
                                             DAGCombinerInfo &DCI);
+  SDValue performSHLPtrCombine(SDNode *N,
+                               unsigned AS,
+                               DAGCombinerInfo &DCI) const;
 
 public:
   SITargetLowering(TargetMachine &tm);
-  bool allowsUnalignedMemoryAccesses(EVT VT, unsigned AS,
-                                     bool *IsFast) const override;
-  bool shouldSplitVectorType(EVT VT) const override;
+
+  bool isLegalAddressingMode(const AddrMode &AM,
+                             Type *Ty) const override;
+
+  bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AS,
+                                      unsigned Align,
+                                      bool *IsFast) const override;
+
+  EVT getOptimalMemOpType(uint64_t Size, unsigned DstAlign,
+                          unsigned SrcAlign, bool IsMemset,
+                          bool ZeroMemset,
+                          bool MemcpyStrSrc,
+                          MachineFunction &MF) const override;
+
+  TargetLoweringBase::LegalizeTypeAction
+  getPreferredVectorAction(EVT VT) const override;
 
   bool shouldConvertConstantLoadToIntImm(const APInt &Imm,
                                         Type *Ty) const override;
@@ -79,4 +106,4 @@ public:
 
 } // End namespace llvm
 
-#endif //SIISELLOWERING_H
+#endif

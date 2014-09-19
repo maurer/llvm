@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef X86_FRAMELOWERING_H
-#define X86_FRAMELOWERING_H
+#ifndef LLVM_LIB_TARGET_X86_X86FRAMELOWERING_H
+#define LLVM_LIB_TARGET_X86_X86FRAMELOWERING_H
 
 #include "llvm/Target/TargetFrameLowering.h"
 
@@ -20,15 +20,20 @@ namespace llvm {
 
 class MCSymbol;
 class X86TargetMachine;
+class X86Subtarget;
 
 class X86FrameLowering : public TargetFrameLowering {
 public:
   explicit X86FrameLowering(StackDirection D, unsigned StackAl, int LAO)
     : TargetFrameLowering(StackGrowsDown, StackAl, LAO) {}
 
+  static void getStackProbeFunction(const X86Subtarget &STI,
+                                    unsigned &CallOp,
+                                    const char *&Symbol);
+
   void emitCalleeSavedFrameMoves(MachineBasicBlock &MBB,
-                                 MachineBasicBlock::iterator MBBI, DebugLoc DL,
-                                 unsigned FramePtr) const;
+                                 MachineBasicBlock::iterator MBBI,
+                                 DebugLoc DL) const;
 
   /// emitProlog/emitEpilog - These methods insert prolog and epilog code into
   /// the function.
@@ -41,6 +46,11 @@ public:
 
   void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
                                      RegScavenger *RS = nullptr) const override;
+
+  bool
+  assignCalleeSavedSpillSlots(MachineFunction &MF,
+                              const TargetRegisterInfo *TRI,
+                              std::vector<CalleeSavedInfo> &CSI) const override;
 
   bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MI,

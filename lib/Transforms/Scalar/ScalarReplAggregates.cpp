@@ -23,6 +23,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/AssumptionTracker.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/CallSite.h"
@@ -197,6 +198,7 @@ namespace {
     // getAnalysisUsage - This pass does not require any passes, but we know it
     // will not alter the CFG, so say so.
     void getAnalysisUsage(AnalysisUsage &AU) const override {
+      AU.addRequired<AssumptionTracker>();
       AU.addRequired<DominatorTreeWrapperPass>();
       AU.setPreservesCFG();
     }
@@ -214,6 +216,7 @@ namespace {
     // getAnalysisUsage - This pass does not require any passes, but we know it
     // will not alter the CFG, so say so.
     void getAnalysisUsage(AnalysisUsage &AU) const override {
+      AU.addRequired<AssumptionTracker>();
       AU.setPreservesCFG();
     }
   };
@@ -225,12 +228,14 @@ char SROA_SSAUp::ID = 0;
 
 INITIALIZE_PASS_BEGIN(SROA_DT, "scalarrepl",
                 "Scalar Replacement of Aggregates (DT)", false, false)
+INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_END(SROA_DT, "scalarrepl",
                 "Scalar Replacement of Aggregates (DT)", false, false)
 
 INITIALIZE_PASS_BEGIN(SROA_SSAUp, "scalarrepl-ssa",
                       "Scalar Replacement of Aggregates (SSAUp)", false, false)
+INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
 INITIALIZE_PASS_END(SROA_SSAUp, "scalarrepl-ssa",
                     "Scalar Replacement of Aggregates (SSAUp)", false, false)
 
@@ -1142,8 +1147,8 @@ public:
 /// We can do this to a select if its only uses are loads and if the operand to
 /// the select can be loaded unconditionally.
 static bool isSafeSelectToSpeculate(SelectInst *SI, const DataLayout *DL) {
-  bool TDerefable = SI->getTrueValue()->isDereferenceablePointer();
-  bool FDerefable = SI->getFalseValue()->isDereferenceablePointer();
+  bool TDerefable = SI->getTrueValue()->isDereferenceablePointer(DL);
+  bool FDerefable = SI->getFalseValue()->isDereferenceablePointer(DL);
 
   for (User *U : SI->users()) {
     LoadInst *LI = dyn_cast<LoadInst>(U);
@@ -1226,7 +1231,7 @@ static bool isSafePHIToSpeculate(PHINode *PN, const DataLayout *DL) {
 
     // If this pointer is always safe to load, or if we can prove that there is
     // already a load in the block, then we can move the load to the pred block.
-    if (InVal->isDereferenceablePointer() ||
+    if (InVal->isDereferenceablePointer(DL) ||
         isSafeToLoadUnconditionally(InVal, Pred->getTerminator(), MaxAlign, DL))
       continue;
 
@@ -1333,12 +1338,15 @@ static bool tryToMakeAllocaBePromotable(AllocaInst *AI, const DataLayout *DL) {
         LoadInst *FalseLoad =
           Builder.CreateLoad(SI->getFalseValue(), LI->getName()+".f");
 
-        // Transfer alignment and TBAA info if present.
+        // Transfer alignment and AA info if present.
         TrueLoad->setAlignment(LI->getAlignment());
         FalseLoad->setAlignment(LI->getAlignment());
-        if (MDNode *Tag = LI->getMetadata(LLVMContext::MD_tbaa)) {
-          TrueLoad->setMetadata(LLVMContext::MD_tbaa, Tag);
-          FalseLoad->setMetadata(LLVMContext::MD_tbaa, Tag);
+
+        AAMDNodes Tags;
+        LI->getAAMetadata(Tags);
+        if (Tags) {
+          TrueLoad->setAAMetadata(Tags);
+          FalseLoad->setAAMetadata(Tags);
         }
 
         Value *V = Builder.CreateSelect(SI->getCondition(), TrueLoad, FalseLoad);
@@ -1364,10 +1372,12 @@ static bool tryToMakeAllocaBePromotable(AllocaInst *AI, const DataLayout *DL) {
     PHINode *NewPN = PHINode::Create(LoadTy, PN->getNumIncomingValues(),
                                      PN->getName()+".ld", PN);
 
-    // Get the TBAA tag and alignment to use from one of the loads.  It doesn't
+    // Get the AA tags and alignment to use from one of the loads.  It doesn't
     // matter which one we get and if any differ, it doesn't matter.
     LoadInst *SomeLoad = cast<LoadInst>(PN->user_back());
-    MDNode *TBAATag = SomeLoad->getMetadata(LLVMContext::MD_tbaa);
+
+    AAMDNodes AATags;
+    SomeLoad->getAAMetadata(AATags);
     unsigned Align = SomeLoad->getAlignment();
 
     // Rewrite all loads of the PN to use the new PHI.
@@ -1389,7 +1399,7 @@ static bool tryToMakeAllocaBePromotable(AllocaInst *AI, const DataLayout *DL) {
                             PN->getName() + "." + Pred->getName(),
                             Pred->getTerminator());
         Load->setAlignment(Align);
-        if (TBAATag) Load->setMetadata(LLVMContext::MD_tbaa, TBAATag);
+        if (AATags) Load->setAAMetadata(AATags);
       }
 
       NewPN->addIncoming(Load, Pred);
@@ -1407,6 +1417,7 @@ bool SROA::performPromotion(Function &F) {
   DominatorTree *DT = nullptr;
   if (HasDomTree)
     DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+  AssumptionTracker *AT = &getAnalysis<AssumptionTracker>();
 
   BasicBlock &BB = F.getEntryBlock();  // Get the entry node for the function
   DIBuilder DIB(*F.getParent());
@@ -1425,7 +1436,7 @@ bool SROA::performPromotion(Function &F) {
     if (Allocas.empty()) break;
 
     if (HasDomTree)
-      PromoteMemToReg(Allocas, *DT);
+      PromoteMemToReg(Allocas, *DT, nullptr, AT);
     else {
       SSAUpdater SSA;
       for (unsigned i = 0, e = Allocas.size(); i != e; ++i) {

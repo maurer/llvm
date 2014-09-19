@@ -40,9 +40,9 @@ extern "C" void LLVMInitializePowerPCTarget() {
 PPCTargetMachine::PPCTargetMachine(const Target &T, StringRef TT, StringRef CPU,
                                    StringRef FS, const TargetOptions &Options,
                                    Reloc::Model RM, CodeModel::Model CM,
-                                   CodeGenOpt::Level OL, bool is64Bit)
+                                   CodeGenOpt::Level OL)
     : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
-      Subtarget(TT, CPU, FS, *this, is64Bit, OL) {
+      Subtarget(TT, CPU, FS, *this, OL) {
   initAsmInfo();
 }
 
@@ -53,7 +53,7 @@ PPC32TargetMachine::PPC32TargetMachine(const Target &T, StringRef TT,
                                        const TargetOptions &Options,
                                        Reloc::Model RM, CodeModel::Model CM,
                                        CodeGenOpt::Level OL)
-  : PPCTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, false) {
+  : PPCTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL) {
 }
 
 void PPC64TargetMachine::anchor() { }
@@ -63,7 +63,7 @@ PPC64TargetMachine::PPC64TargetMachine(const Target &T, StringRef TT,
                                        const TargetOptions &Options,
                                        Reloc::Model RM, CodeModel::Model CM,
                                        CodeGenOpt::Level OL)
-  : PPCTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {
+  : PPCTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL) {
 }
 
 
@@ -145,18 +145,6 @@ bool PPCPassConfig::addPreEmitPass() {
     addPass(createPPCEarlyReturnPass());
   // Must run branch selection immediately preceding the asm printer.
   addPass(createPPCBranchSelectionPass());
-  return false;
-}
-
-bool PPCTargetMachine::addCodeEmitter(PassManagerBase &PM,
-                                      JITCodeEmitter &JCE) {
-  // Inform the subtarget that we are in JIT mode.  FIXME: does this break macho
-  // writing?
-  Subtarget.SetJITMode();
-
-  // Machine code emitter pass for PowerPC.
-  PM.add(createPPCJITCodeEmitterPass(*this, JCE));
-
   return false;
 }
 

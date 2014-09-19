@@ -8,8 +8,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_STACKMAPS
-#define LLVM_STACKMAPS
+#ifndef LLVM_CODEGEN_STACKMAPS_H
+#define LLVM_CODEGEN_STACKMAPS_H
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -118,6 +118,12 @@ public:
 
   StackMaps(AsmPrinter &AP);
 
+  void reset() {
+    CSInfos.clear();
+    ConstPool.clear();
+    FnStackSize.clear();
+  }
+
   /// \brief Generate a stackmap record for a stackmap instruction.
   ///
   /// MI must be a raw STACKMAP, not a PATCHPOINT.
@@ -196,4 +202,4 @@ private:
 
 }
 
-#endif // LLVM_STACKMAPS
+#endif

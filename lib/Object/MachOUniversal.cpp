@@ -53,7 +53,7 @@ static T getUniversalBinaryStruct(const char *Ptr) {
 MachOUniversalBinary::ObjectForArch::ObjectForArch(
     const MachOUniversalBinary *Parent, uint32_t Index)
     : Parent(Parent), Index(Index) {
-  if (!Parent || Index > Parent->getNumberOfObjects()) {
+  if (!Parent || Index >= Parent->getNumberOfObjects()) {
     clear();
   } else {
     // Parse object header.
@@ -67,21 +67,14 @@ MachOUniversalBinary::ObjectForArch::ObjectForArch(
   }
 }
 
-std::error_code MachOUniversalBinary::ObjectForArch::getAsObjectFile(
-    std::unique_ptr<ObjectFile> &Result) const {
+ErrorOr<std::unique_ptr<ObjectFile>>
+MachOUniversalBinary::ObjectForArch::getAsObjectFile() const {
   if (Parent) {
     StringRef ParentData = Parent->getData();
     StringRef ObjectData = ParentData.substr(Header.offset, Header.size);
-    std::string ObjectName =
-        Parent->getFileName().str() + ":" +
-        Triple::getArchTypeName(MachOObjectFile::getArch(Header.cputype));
-    MemoryBuffer *ObjBuffer = MemoryBuffer::getMemBuffer(
-        ObjectData, ObjectName, false);
-    ErrorOr<ObjectFile *> Obj = ObjectFile::createMachOObjectFile(ObjBuffer);
-    if (std::error_code EC = Obj.getError())
-      return EC;
-    Result.reset(Obj.get());
-    return object_error::success;
+    StringRef ObjectName = Parent->getFileName();
+    MemoryBufferRef ObjBuffer(ObjectData, ObjectName);
+    return ObjectFile::createMachOObjectFile(ObjBuffer);
   }
   return object_error::parse_failed;
 }
@@ -91,15 +84,12 @@ std::error_code MachOUniversalBinary::ObjectForArch::getAsArchive(
   if (Parent) {
     StringRef ParentData = Parent->getData();
     StringRef ObjectData = ParentData.substr(Header.offset, Header.size);
-    std::string ObjectName =
-        Parent->getFileName().str() + ":" +
-        Triple::getArchTypeName(MachOObjectFile::getArch(Header.cputype));
-    MemoryBuffer *ObjBuffer = MemoryBuffer::getMemBuffer(
-        ObjectData, ObjectName, false);
-    ErrorOr<Archive *> Obj = Archive::create(ObjBuffer);
+    StringRef ObjectName = Parent->getFileName();
+    MemoryBufferRef ObjBuffer(ObjectData, ObjectName);
+    ErrorOr<std::unique_ptr<Archive>> Obj = Archive::create(ObjBuffer);
     if (std::error_code EC = Obj.getError())
       return EC;
-    Result.reset(Obj.get());
+    Result = std::move(Obj.get());
     return object_error::success;
   }
   return object_error::parse_failed;
@@ -107,20 +97,20 @@ std::error_code MachOUniversalBinary::ObjectForArch::getAsArchive(
 
 void MachOUniversalBinary::anchor() { }
 
-ErrorOr<MachOUniversalBinary *>
-MachOUniversalBinary::create(MemoryBuffer *Source) {
+ErrorOr<std::unique_ptr<MachOUniversalBinary>>
+MachOUniversalBinary::create(MemoryBufferRef Source) {
   std::error_code EC;
   std::unique_ptr<MachOUniversalBinary> Ret(
       new MachOUniversalBinary(Source, EC));
   if (EC)
     return EC;
-  return Ret.release();
+  return std::move(Ret);
 }
 
-MachOUniversalBinary::MachOUniversalBinary(MemoryBuffer *Source,
+MachOUniversalBinary::MachOUniversalBinary(MemoryBufferRef Source,
                                            std::error_code &ec)
     : Binary(Binary::ID_MachOUniversalBinary, Source), NumberOfObjects(0) {
-  if (Source->getBufferSize() < sizeof(MachO::fat_header)) {
+  if (Data.getBufferSize() < sizeof(MachO::fat_header)) {
     ec = object_error::invalid_file_type;
     return;
   }
@@ -149,14 +139,14 @@ static bool getCTMForArch(Triple::ArchType Arch, MachO::CPUType &CTM) {
   }
 }
 
-std::error_code MachOUniversalBinary::getObjectForArch(
-    Triple::ArchType Arch, std::unique_ptr<ObjectFile> &Result) const {
+ErrorOr<std::unique_ptr<ObjectFile>>
+MachOUniversalBinary::getObjectForArch(Triple::ArchType Arch) const {
   MachO::CPUType CTM;
   if (!getCTMForArch(Arch, CTM))
     return object_error::arch_not_found;
   for (object_iterator I = begin_objects(), E = end_objects(); I != E; ++I) {
     if (I->getCPUType() == static_cast<uint32_t>(CTM))
-      return I->getAsObjectFile(Result);
+      return I->getAsObjectFile();
   }
   return object_error::arch_not_found;
 }

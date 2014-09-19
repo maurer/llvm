@@ -185,7 +185,7 @@ static void ContractNodes(std::unique_ptr<Matcher> &MatcherPtr,
 /// Conceptually, we'd like to sink these predicates all the way to the last
 /// matcher predicate in the series.  However, it turns out that some
 /// ComplexPatterns have side effects on the graph, so we really don't want to
-/// run a the complex pattern if the pattern predicate will fail.  For this
+/// run a complex pattern if the pattern predicate will fail.  For this
 /// reason, we refuse to sink the pattern predicate past a ComplexPattern.
 ///
 static void SinkPatternPredicates(std::unique_ptr<Matcher> &MatcherPtr) {
@@ -400,7 +400,7 @@ static void FactorNodes(std::unique_ptr<Matcher> &MatcherPtr) {
   }
   
   if (NewOptionsToMatch.empty()) {
-    MatcherPtr.reset(nullptr);
+    MatcherPtr.reset();
     return;
   }
   

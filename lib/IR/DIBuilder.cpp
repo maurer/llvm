@@ -102,7 +102,8 @@ DICompileUnit DIBuilder::createCompileUnit(unsigned Lang, StringRef Filename,
                                            StringRef Producer, bool isOptimized,
                                            StringRef Flags, unsigned RunTimeVer,
                                            StringRef SplitName,
-                                           DebugEmissionKind Kind) {
+                                           DebugEmissionKind Kind,
+                                           bool EmitDebugInfo) {
 
   assert(((Lang <= dwarf::DW_LANG_OCaml && Lang >= dwarf::DW_LANG_C89) ||
           (Lang <= dwarf::DW_LANG_hi_user && Lang >= dwarf::DW_LANG_lo_user)) &&
@@ -140,8 +141,14 @@ DICompileUnit DIBuilder::createCompileUnit(unsigned Lang, StringRef Filename,
   MDNode *CUNode = MDNode::get(VMContext, Elts);
 
   // Create a named metadata so that it is easier to find cu in a module.
-  NamedMDNode *NMD = M.getOrInsertNamedMetadata("llvm.dbg.cu");
-  NMD->addOperand(CUNode);
+  // Note that we only generate this when the caller wants to actually
+  // emit debug information. When we are only interested in tracking
+  // source line locations throughout the backend, we prevent codegen from
+  // emitting debug info in the final output by not generating llvm.dbg.cu.
+  if (EmitDebugInfo) {
+    NamedMDNode *NMD = M.getOrInsertNamedMetadata("llvm.dbg.cu");
+    NMD->addOperand(CUNode);
+  }
 
   return DICompileUnit(CUNode);
 }
@@ -713,9 +720,9 @@ DICompositeType DIBuilder::createUnionType(DIDescriptor Scope, StringRef Name,
 }
 
 /// createSubroutineType - Create subroutine type.
-DICompositeType DIBuilder::createSubroutineType(DIFile File,
-                                                DIArray ParameterTypes,
-                                                unsigned Flags) {
+DISubroutineType DIBuilder::createSubroutineType(DIFile File,
+                                                 DITypeArray ParameterTypes,
+                                                 unsigned Flags) {
   // TAG_subroutine_type is encoded in DICompositeType format.
   Value *Elts[] = {
     GetTagConstant(VMContext, dwarf::DW_TAG_subroutine_type),
@@ -734,7 +741,7 @@ DICompositeType DIBuilder::createSubroutineType(DIFile File,
     nullptr,
     nullptr  // Type Identifer
   };
-  return DICompositeType(MDNode::get(VMContext, Elts));
+  return DISubroutineType(MDNode::get(VMContext, Elts));
 }
 
 /// createEnumerationType - Create debugging information entry for an
@@ -868,15 +875,11 @@ void DIBuilder::retainType(DIType T) {
 
 /// createUnspecifiedParameter - Create unspeicified type descriptor
 /// for the subroutine type.
-DIDescriptor DIBuilder::createUnspecifiedParameter() {
-  Value *Elts[] = {
-    GetTagConstant(VMContext, dwarf::DW_TAG_unspecified_parameters)
-  };
-  return DIDescriptor(MDNode::get(VMContext, Elts));
+DIBasicType DIBuilder::createUnspecifiedParameter() {
+  return DIBasicType();
 }
 
-/// createForwardDecl - Create a temporary forward-declared type that
-/// can be RAUW'd if the full type is seen.
+/// createForwardDecl - Create a permanent forward-declared type.
 DICompositeType
 DIBuilder::createForwardDecl(unsigned Tag, StringRef Name, DIDescriptor Scope,
                              DIFile F, unsigned Line, unsigned RuntimeLang,
@@ -910,7 +913,7 @@ DIBuilder::createForwardDecl(unsigned Tag, StringRef Name, DIDescriptor Scope,
   return RetTy;
 }
 
-/// createForwardDecl - Create a temporary forward-declared type that
+/// createReplaceableForwardDecl - Create a temporary forward-declared type that
 /// can be RAUW'd if the full type is seen.
 DICompositeType DIBuilder::createReplaceableForwardDecl(
     unsigned Tag, StringRef Name, DIDescriptor Scope, DIFile F, unsigned Line,
@@ -938,7 +941,7 @@ DICompositeType DIBuilder::createReplaceableForwardDecl(
   MDNode *Node = MDNode::getTemporary(VMContext, Elts);
   DICompositeType RetTy(Node);
   assert(RetTy.isCompositeType() &&
-         "createForwardDecl result should be a DIType");
+         "createReplaceableForwardDecl result should be a DIType");
   if (!UniqueIdentifier.empty())
     retainType(RetTy);
   return RetTy;
@@ -947,6 +950,18 @@ DICompositeType DIBuilder::createReplaceableForwardDecl(
 /// getOrCreateArray - Get a DIArray, create one if required.
 DIArray DIBuilder::getOrCreateArray(ArrayRef<Value *> Elements) {
   return DIArray(MDNode::get(VMContext, Elements));
+}
+
+/// getOrCreateTypeArray - Get a DITypeArray, create one if required.
+DITypeArray DIBuilder::getOrCreateTypeArray(ArrayRef<Value *> Elements) {
+  SmallVector<llvm::Value *, 16> Elts; 
+  for (unsigned i = 0, e = Elements.size(); i != e; ++i) {
+    if (Elements[i] && isa<MDNode>(Elements[i]))
+      Elts.push_back(DIType(cast<MDNode>(Elements[i])).getRef());
+    else
+      Elts.push_back(Elements[i]);
+  }
+  return DITypeArray(MDNode::get(VMContext, Elts));
 }
 
 /// getOrCreateSubrange - Create a descriptor for a value range.  This
@@ -997,15 +1012,12 @@ DIGlobalVariable DIBuilder::createGlobalVariable(StringRef Name, DIFile F,
                               Val);
 }
 
-/// createStaticVariable - Create a new descriptor for the specified static
-/// variable.
-DIGlobalVariable DIBuilder::createStaticVariable(DIDescriptor Context,
-                                                 StringRef Name,
-                                                 StringRef LinkageName,
-                                                 DIFile F, unsigned LineNumber,
-                                                 DITypeRef Ty,
-                                                 bool isLocalToUnit,
-                                                 Value *Val, MDNode *Decl) {
+static DIGlobalVariable
+createStaticVariableHelper(LLVMContext &VMContext, DIDescriptor Context,
+                           StringRef Name, StringRef LinkageName, DIFile F,
+                           unsigned LineNumber, DITypeRef Ty, bool isLocalToUnit,
+                           Value *Val, MDNode *Decl, bool isDefinition,
+                           std::function<MDNode *(ArrayRef<Value *>)> CreateFunc) {
   Value *Elts[] = {
     GetTagConstant(VMContext, dwarf::DW_TAG_variable),
     Constant::getNullValue(Type::getInt32Ty(VMContext)),
@@ -1017,13 +1029,47 @@ DIGlobalVariable DIBuilder::createStaticVariable(DIDescriptor Context,
     ConstantInt::get(Type::getInt32Ty(VMContext), LineNumber),
     Ty,
     ConstantInt::get(Type::getInt32Ty(VMContext), isLocalToUnit),
-    ConstantInt::get(Type::getInt32Ty(VMContext), 1), /* isDefinition*/
+    ConstantInt::get(Type::getInt32Ty(VMContext), isDefinition),
     Val,
     DIDescriptor(Decl)
   };
-  MDNode *Node = MDNode::get(VMContext, Elts);
-  AllGVs.push_back(Node);
-  return DIGlobalVariable(Node);
+
+  return DIGlobalVariable(CreateFunc(Elts));
+}
+
+/// createStaticVariable - Create a new descriptor for the specified
+/// variable.
+DIGlobalVariable DIBuilder::createStaticVariable(DIDescriptor Context,
+                                                 StringRef Name,
+                                                 StringRef LinkageName,
+                                                 DIFile F, unsigned LineNumber,
+                                                 DITypeRef Ty,
+                                                 bool isLocalToUnit,
+                                                 Value *Val, MDNode *Decl) {
+  return createStaticVariableHelper(VMContext, Context, Name, LinkageName, F,
+                                    LineNumber, Ty, isLocalToUnit, Val, Decl, true,
+                                    [&] (ArrayRef<Value *> Elts) -> MDNode * {
+                                      MDNode *Node = MDNode::get(VMContext, Elts);
+                                      AllGVs.push_back(Node);
+                                      return Node;
+                                    });
+}
+
+/// createTempStaticVariableFwdDecl - Create a new temporary descriptor for the
+/// specified variable declarartion.
+DIGlobalVariable
+DIBuilder::createTempStaticVariableFwdDecl(DIDescriptor Context,
+                                           StringRef Name,
+                                           StringRef LinkageName,
+                                           DIFile F, unsigned LineNumber,
+                                           DITypeRef Ty,
+                                           bool isLocalToUnit,
+                                           Value *Val, MDNode *Decl) {
+  return createStaticVariableHelper(VMContext, Context, Name, LinkageName, F,
+                                    LineNumber, Ty, isLocalToUnit, Val, Decl, false,
+                                    [&] (ArrayRef<Value *> Elts) {
+                                      return MDNode::getTemporary(VMContext, Elts);
+                                    });
 }
 
 /// createVariable - Create a new descriptor for the specified variable.
@@ -1068,18 +1114,41 @@ DIVariable DIBuilder::createComplexVariable(unsigned Tag, DIDescriptor Scope,
                                             DITypeRef Ty,
                                             ArrayRef<Value *> Addr,
                                             unsigned ArgNo) {
-  SmallVector<Value *, 15> Elts;
-  Elts.push_back(GetTagConstant(VMContext, Tag));
-  Elts.push_back(getNonCompileUnitScope(Scope)),
-  Elts.push_back(MDString::get(VMContext, Name));
-  Elts.push_back(F);
-  Elts.push_back(ConstantInt::get(Type::getInt32Ty(VMContext),
-                                  (LineNo | (ArgNo << 24))));
-  Elts.push_back(Ty);
-  Elts.push_back(Constant::getNullValue(Type::getInt32Ty(VMContext)));
-  Elts.push_back(Constant::getNullValue(Type::getInt32Ty(VMContext)));
-  Elts.append(Addr.begin(), Addr.end());
+  assert(Addr.size() > 0 && "complex address is empty");
+  Value *Elts[] = {
+    GetTagConstant(VMContext, Tag),
+    getNonCompileUnitScope(Scope),
+    MDString::get(VMContext, Name),
+    F,
+    ConstantInt::get(Type::getInt32Ty(VMContext),
+                     (LineNo | (ArgNo << 24))),
+    Ty,
+    Constant::getNullValue(Type::getInt32Ty(VMContext)),
+    Constant::getNullValue(Type::getInt32Ty(VMContext)),
+    MDNode::get(VMContext, Addr)
+  };
+  return DIVariable(MDNode::get(VMContext, Elts));
+}
 
+/// createVariablePiece - Create a descriptor to describe one part
+/// of aggregate variable that is fragmented across multiple Values.
+DIVariable DIBuilder::createVariablePiece(DIVariable Variable,
+                                          unsigned OffsetInBytes,
+                                          unsigned SizeInBytes) {
+  assert(SizeInBytes > 0 && "zero-size piece");
+  Value *Addr[] = {
+    ConstantInt::get(Type::getInt32Ty(VMContext), OpPiece),
+    ConstantInt::get(Type::getInt32Ty(VMContext), OffsetInBytes),
+    ConstantInt::get(Type::getInt32Ty(VMContext), SizeInBytes)
+  };
+
+  assert((Variable->getNumOperands() == 8 || Variable.isVariablePiece()) &&
+         "variable already has a complex address");
+  SmallVector<Value *, 9> Elts;
+  for (unsigned i = 0; i < 8; ++i)
+    Elts.push_back(Variable->getOperand(i));
+
+  Elts.push_back(MDNode::get(VMContext, Addr));
   return DIVariable(MDNode::get(VMContext, Elts));
 }
 
@@ -1101,14 +1170,13 @@ DISubprogram DIBuilder::createFunction(DIScopeRef Context, StringRef Name,
                         Flags, isOptimized, Fn, TParams, Decl);
 }
 
-/// createFunction - Create a new descriptor for the specified function.
-DISubprogram DIBuilder::createFunction(DIDescriptor Context, StringRef Name,
-                                       StringRef LinkageName, DIFile File,
-                                       unsigned LineNo, DICompositeType Ty,
-                                       bool isLocalToUnit, bool isDefinition,
-                                       unsigned ScopeLine, unsigned Flags,
-                                       bool isOptimized, Function *Fn,
-                                       MDNode *TParams, MDNode *Decl) {
+static DISubprogram
+createFunctionHelper(LLVMContext &VMContext, DIDescriptor Context, StringRef Name,
+                     StringRef LinkageName, DIFile File, unsigned LineNo,
+                     DICompositeType Ty, bool isLocalToUnit, bool isDefinition,
+                     unsigned ScopeLine, unsigned Flags, bool isOptimized,
+                     Function *Fn, MDNode *TParams, MDNode *Decl,
+                     std::function<MDNode *(ArrayRef<Value *>)> CreateFunc) {
   assert(Ty.getTag() == dwarf::DW_TAG_subroutine_type &&
          "function types should be subroutines");
   Value *TElts[] = { GetTagConstant(VMContext, DW_TAG_base_type) };
@@ -1134,15 +1202,51 @@ DISubprogram DIBuilder::createFunction(DIDescriptor Context, StringRef Name,
     MDNode::getTemporary(VMContext, TElts),
     ConstantInt::get(Type::getInt32Ty(VMContext), ScopeLine)
   };
-  MDNode *Node = MDNode::get(VMContext, Elts);
 
-  // Create a named metadata so that we do not lose this mdnode.
-  if (isDefinition)
-    AllSubprograms.push_back(Node);
-  DISubprogram S(Node);
+  DISubprogram S(CreateFunc(Elts));
   assert(S.isSubprogram() &&
          "createFunction should return a valid DISubprogram");
   return S;
+}
+
+
+/// createFunction - Create a new descriptor for the specified function.
+DISubprogram DIBuilder::createFunction(DIDescriptor Context, StringRef Name,
+                                       StringRef LinkageName, DIFile File,
+                                       unsigned LineNo, DICompositeType Ty,
+                                       bool isLocalToUnit, bool isDefinition,
+                                       unsigned ScopeLine, unsigned Flags,
+                                       bool isOptimized, Function *Fn,
+                                       MDNode *TParams, MDNode *Decl) {
+  return createFunctionHelper(VMContext, Context, Name, LinkageName, File,
+                              LineNo, Ty, isLocalToUnit, isDefinition, ScopeLine,
+                              Flags, isOptimized, Fn, TParams, Decl,
+                              [&] (ArrayRef<Value *> Elts) -> MDNode *{
+                                MDNode *Node = MDNode::get(VMContext, Elts);
+                                // Create a named metadata so that we
+                                // do not lose this mdnode.
+                                if (isDefinition)
+                                  AllSubprograms.push_back(Node);
+                                return Node;
+                              });
+}
+
+/// createTempFunctionFwdDecl - Create a new temporary descriptor for
+/// the specified function declaration.
+DISubprogram
+DIBuilder::createTempFunctionFwdDecl(DIDescriptor Context, StringRef Name,
+                                     StringRef LinkageName, DIFile File,
+                                     unsigned LineNo, DICompositeType Ty,
+                                     bool isLocalToUnit, bool isDefinition,
+                                     unsigned ScopeLine, unsigned Flags,
+                                     bool isOptimized, Function *Fn,
+                                     MDNode *TParams, MDNode *Decl) {
+  return createFunctionHelper(VMContext, Context, Name, LinkageName, File,
+                              LineNo, Ty, isLocalToUnit, isDefinition, ScopeLine,
+                              Flags, isOptimized, Fn, TParams, Decl,
+                              [&] (ArrayRef<Value *> Elts) {
+                                return MDNode::getTemporary(VMContext, Elts);
+                              });
 }
 
 /// createMethod - Create a new descriptor for the specified C++ method.
@@ -1210,11 +1314,13 @@ DINameSpace DIBuilder::createNameSpace(DIDescriptor Scope, StringRef Name,
 /// createLexicalBlockFile - This creates a new MDNode that encapsulates
 /// an existing scope with a new filename.
 DILexicalBlockFile DIBuilder::createLexicalBlockFile(DIDescriptor Scope,
-                                                     DIFile File) {
+                                                     DIFile File,
+                                                     unsigned Discriminator) {
   Value *Elts[] = {
     GetTagConstant(VMContext, dwarf::DW_TAG_lexical_block),
     File.getFileNode(),
-    Scope
+    Scope,
+    ConstantInt::get(Type::getInt32Ty(VMContext), Discriminator),
   };
   DILexicalBlockFile R(MDNode::get(VMContext, Elts));
   assert(
@@ -1224,8 +1330,7 @@ DILexicalBlockFile DIBuilder::createLexicalBlockFile(DIDescriptor Scope,
 }
 
 DILexicalBlock DIBuilder::createLexicalBlock(DIDescriptor Scope, DIFile File,
-                                             unsigned Line, unsigned Col,
-                                             unsigned Discriminator) {
+                                             unsigned Line, unsigned Col) {
   // FIXME: This isn't thread safe nor the right way to defeat MDNode uniquing.
   // I believe the right way is to have a self-referential element in the node.
   // Also: why do we bother with line/column - they're not used and the
@@ -1241,7 +1346,6 @@ DILexicalBlock DIBuilder::createLexicalBlock(DIDescriptor Scope, DIFile File,
     getNonCompileUnitScope(Scope),
     ConstantInt::get(Type::getInt32Ty(VMContext), Line),
     ConstantInt::get(Type::getInt32Ty(VMContext), Col),
-    ConstantInt::get(Type::getInt32Ty(VMContext), Discriminator),
     ConstantInt::get(Type::getInt32Ty(VMContext), unique_id++)
   };
   DILexicalBlock R(MDNode::get(VMContext, Elts));

@@ -335,7 +335,7 @@ static bool VerifyLowRegs(MachineInstr *MI) {
   bool isPCOk = (Opc == ARM::t2LDMIA_RET || Opc == ARM::t2LDMIA     ||
                  Opc == ARM::t2LDMDB     || Opc == ARM::t2LDMIA_UPD ||
                  Opc == ARM::t2LDMDB_UPD);
-  bool isLROk = (Opc == ARM::t2STMIA_UPD || Opc == ARM::t2STMDB_UPD);
+  bool isLROk = (Opc == ARM::t2STMDB_UPD);
   bool isSPOk = isPCOk || isLROk;
   for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
     const MachineOperand &MO = MI->getOperand(i);
@@ -1003,14 +1003,16 @@ bool Thumb2SizeReduce::ReduceMBB(MachineBasicBlock &MBB) {
 
 bool Thumb2SizeReduce::runOnMachineFunction(MachineFunction &MF) {
   const TargetMachine &TM = MF.getTarget();
-  TII = static_cast<const Thumb2InstrInfo*>(TM.getInstrInfo());
+  TII = static_cast<const Thumb2InstrInfo *>(
+      TM.getSubtargetImpl()->getInstrInfo());
   STI = &TM.getSubtarget<ARMSubtarget>();
 
   // Optimizing / minimizing size?
   AttributeSet FnAttrs = MF.getFunction()->getAttributes();
   OptimizeSize = FnAttrs.hasAttribute(AttributeSet::FunctionIndex,
                                       Attribute::OptimizeForSize);
-  MinimizeSize = STI->isMinSize();
+  MinimizeSize =
+      FnAttrs.hasAttribute(AttributeSet::FunctionIndex, Attribute::MinSize);
 
   BlockInfo.clear();
   BlockInfo.resize(MF.getNumBlockIDs());

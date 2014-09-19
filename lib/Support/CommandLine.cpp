@@ -145,6 +145,7 @@ void OptionCategory::registerCategory() {
 static void GetOptionInfo(SmallVectorImpl<Option*> &PositionalOpts,
                           SmallVectorImpl<Option*> &SinkOpts,
                           StringMap<Option*> &OptionsMap) {
+  bool HadErrors = false;
   SmallVector<const char*, 16> OptionNames;
   Option *CAOpt = nullptr;  // The ConsumeAfter option if it exists.
   for (Option *O = RegisteredOptionList; O; O = O->getNextRegisteredOption()) {
@@ -158,8 +159,9 @@ static void GetOptionInfo(SmallVectorImpl<Option*> &PositionalOpts,
     for (size_t i = 0, e = OptionNames.size(); i != e; ++i) {
       // Add argument to the argument map!
       if (OptionsMap.GetOrCreateValue(OptionNames[i], O).second != O) {
-        errs() << ProgramName << ": CommandLine Error: Argument '"
-             << OptionNames[i] << "' defined more than once!\n";
+        errs() << ProgramName << ": CommandLine Error: Option '"
+               << OptionNames[i] << "' registered more than once!\n";
+        HadErrors = true;
       }
     }
 
@@ -171,8 +173,10 @@ static void GetOptionInfo(SmallVectorImpl<Option*> &PositionalOpts,
     else if (O->getMiscFlags() & cl::Sink) // Remember sink options
       SinkOpts.push_back(O);
     else if (O->getNumOccurrencesFlag() == cl::ConsumeAfter) {
-      if (CAOpt)
+      if (CAOpt) {
         O->error("Cannot specify more than one option with cl::ConsumeAfter!");
+        HadErrors = true;
+      }
       CAOpt = O;
     }
   }
@@ -182,6 +186,12 @@ static void GetOptionInfo(SmallVectorImpl<Option*> &PositionalOpts,
 
   // Make sure that they are in order of registration not backwards.
   std::reverse(PositionalOpts.begin(), PositionalOpts.end());
+
+  // Fail hard if there were errors. These are strictly unrecoverable and
+  // indicate serious issues such as conflicting option names or an incorrectly
+  // linked LLVM distribution.
+  if (HadErrors)
+    report_fatal_error("inconsistency in registered CommandLine options");
 }
 
 
@@ -464,13 +474,18 @@ static bool isGNUSpecial(char C) {
 }
 
 void cl::TokenizeGNUCommandLine(StringRef Src, StringSaver &Saver,
-                                SmallVectorImpl<const char *> &NewArgv) {
+                                SmallVectorImpl<const char *> &NewArgv,
+                                bool MarkEOLs) {
   SmallString<128> Token;
   for (size_t I = 0, E = Src.size(); I != E; ++I) {
     // Consume runs of whitespace.
     if (Token.empty()) {
-      while (I != E && isWhitespace(Src[I]))
+      while (I != E && isWhitespace(Src[I])) {
+        // Mark the end of lines in response files
+        if (MarkEOLs && Src[I] == '\n')
+          NewArgv.push_back(nullptr);
         ++I;
+      }
       if (I == E) break;
     }
 
@@ -511,6 +526,9 @@ void cl::TokenizeGNUCommandLine(StringRef Src, StringSaver &Saver,
   // Append the last token after hitting EOF with no whitespace.
   if (!Token.empty())
     NewArgv.push_back(Saver.SaveString(Token.c_str()));
+  // Mark the end of response files
+  if (MarkEOLs)
+    NewArgv.push_back(nullptr);
 }
 
 /// Backslashes are interpreted in a rather complicated way in the Windows-style
@@ -552,7 +570,8 @@ static size_t parseBackslash(StringRef Src, size_t I, SmallString<128> &Token) {
 }
 
 void cl::TokenizeWindowsCommandLine(StringRef Src, StringSaver &Saver,
-                                    SmallVectorImpl<const char *> &NewArgv) {
+                                    SmallVectorImpl<const char *> &NewArgv,
+                                    bool MarkEOLs) {
   SmallString<128> Token;
 
   // This is a small state machine to consume characters until it reaches the
@@ -562,8 +581,12 @@ void cl::TokenizeWindowsCommandLine(StringRef Src, StringSaver &Saver,
     // INIT state indicates that the current input index is at the start of
     // the string or between tokens.
     if (State == INIT) {
-      if (isWhitespace(Src[I]))
+      if (isWhitespace(Src[I])) {
+        // Mark the end of lines in response files
+        if (MarkEOLs && Src[I] == '\n')
+          NewArgv.push_back(nullptr);
         continue;
+      }
       if (Src[I] == '"') {
         State = QUOTED;
         continue;
@@ -586,6 +609,9 @@ void cl::TokenizeWindowsCommandLine(StringRef Src, StringSaver &Saver,
         NewArgv.push_back(Saver.SaveString(Token.c_str()));
         Token.clear();
         State = INIT;
+        // Mark the end of lines in response files
+        if (MarkEOLs && Src[I] == '\n')
+          NewArgv.push_back(nullptr);
         continue;
       }
       if (Src[I] == '"') {
@@ -616,18 +642,24 @@ void cl::TokenizeWindowsCommandLine(StringRef Src, StringSaver &Saver,
   // Append the last token after hitting EOF with no whitespace.
   if (!Token.empty())
     NewArgv.push_back(Saver.SaveString(Token.c_str()));
+  // Mark the end of response files
+  if (MarkEOLs)
+    NewArgv.push_back(nullptr);
 }
 
 static bool ExpandResponseFile(const char *FName, StringSaver &Saver,
                                TokenizerCallback Tokenizer,
-                               SmallVectorImpl<const char *> &NewArgv) {
-  std::unique_ptr<MemoryBuffer> MemBuf;
-  if (MemoryBuffer::getFile(FName, MemBuf))
+                               SmallVectorImpl<const char *> &NewArgv,
+                               bool MarkEOLs = false) {
+  ErrorOr<std::unique_ptr<MemoryBuffer>> MemBufOrErr =
+      MemoryBuffer::getFile(FName);
+  if (!MemBufOrErr)
     return false;
-  StringRef Str(MemBuf->getBufferStart(), MemBuf->getBufferSize());
+  MemoryBuffer &MemBuf = *MemBufOrErr.get();
+  StringRef Str(MemBuf.getBufferStart(), MemBuf.getBufferSize());
 
   // If we have a UTF-16 byte order mark, convert to UTF-8 for parsing.
-  ArrayRef<char> BufRef(MemBuf->getBufferStart(), MemBuf->getBufferEnd());
+  ArrayRef<char> BufRef(MemBuf.getBufferStart(), MemBuf.getBufferEnd());
   std::string UTF8Buf;
   if (hasUTF16ByteOrderMark(BufRef)) {
     if (!convertUTF16ToUTF8String(BufRef, UTF8Buf))
@@ -636,7 +668,7 @@ static bool ExpandResponseFile(const char *FName, StringSaver &Saver,
   }
 
   // Tokenize the contents into NewArgv.
-  Tokenizer(Str, Saver, NewArgv);
+  Tokenizer(Str, Saver, NewArgv, MarkEOLs);
 
   return true;
 }
@@ -644,13 +676,19 @@ static bool ExpandResponseFile(const char *FName, StringSaver &Saver,
 /// \brief Expand response files on a command line recursively using the given
 /// StringSaver and tokenization strategy.
 bool cl::ExpandResponseFiles(StringSaver &Saver, TokenizerCallback Tokenizer,
-                             SmallVectorImpl<const char *> &Argv) {
+                             SmallVectorImpl<const char *> &Argv,
+                             bool MarkEOLs) {
   unsigned RspFiles = 0;
   bool AllExpanded = true;
 
   // Don't cache Argv.size() because it can change.
   for (unsigned I = 0; I != Argv.size(); ) {
     const char *Arg = Argv[I];
+    // Check if it is an EOL marker
+    if (Arg == nullptr) {
+      ++I;
+      continue;
+    }
     if (Arg[0] != '@') {
       ++I;
       continue;
@@ -666,7 +704,8 @@ bool cl::ExpandResponseFiles(StringSaver &Saver, TokenizerCallback Tokenizer,
     // FIXME: If a nested response file uses a relative path, is it relative to
     // the cwd of the process or the response file?
     SmallVector<const char *, 0> ExpandedArgv;
-    if (!ExpandResponseFile(Arg + 1, Saver, Tokenizer, ExpandedArgv)) {
+    if (!ExpandResponseFile(Arg + 1, Saver, Tokenizer, ExpandedArgv,
+                            MarkEOLs)) {
       // We couldn't read this file, so we leave it in the argument stream and
       // move on.
       AllExpanded = false;
@@ -1006,13 +1045,12 @@ void cl::ParseCommandLineOptions(int argc, const char * const *argv,
   }
 
   // Loop over args and make sure all required args are specified!
-  for (StringMap<Option*>::iterator I = Opts.begin(),
-         E = Opts.end(); I != E; ++I) {
-    switch (I->second->getNumOccurrencesFlag()) {
+  for (const auto &Opt : Opts) {
+    switch (Opt.second->getNumOccurrencesFlag()) {
     case Required:
     case OneOrMore:
-      if (I->second->getNumOccurrences() == 0) {
-        I->second->error("must be specified at least once!");
+      if (Opt.second->getNumOccurrences() == 0) {
+        Opt.second->error("must be specified at least once!");
         ErrorParsing = true;
       }
       // Fall through

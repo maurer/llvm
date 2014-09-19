@@ -27,9 +27,27 @@ def VCC : RegisterWithSubRegs<"VCC", [VCC_LO, VCC_HI]> {
   let HWEncoding = 106;
 }
 
-def EXEC : SIReg<"EXEC", 126>;
+def EXEC_LO : SIReg<"EXEC", 126>;
+def EXEC_HI : SIReg<"EXEC", 127>;
+
+def EXEC : RegisterWithSubRegs<"EXEC", [EXEC_LO, EXEC_HI]> {
+  let Namespace = "AMDGPU";
+  let SubRegIndices = [sub0, sub1];
+  let HWEncoding = 126;
+}
+
 def SCC : SIReg<"SCC", 253>;
 def M0 : SIReg <"M0", 124>;
+
+def FLAT_SCR_LO : SIReg<"flat_scr_lo", 104>; // Offset in units of 256-bytes.
+def FLAT_SCR_HI : SIReg<"flat_scr_hi", 105>; // Size is the per-thread scratch size, in bytes.
+
+// Pair to indicate location of scratch space for flat accesses.
+def FLAT_SCR : RegisterWithSubRegs <"FLAT_SCR", [FLAT_SCR_LO, FLAT_SCR_HI]> {
+  let Namespace = "AMDGPU";
+  let SubRegIndices = [sub0, sub1];
+  let HWEncoding = 104;
+}
 
 // SGPR registers
 foreach Index = 0-101 in {
@@ -159,16 +177,16 @@ def M0Reg : RegisterClass<"AMDGPU", [i32], 32, (add M0)>;
 
 // Register class for all scalar registers (SGPRs + Special Registers)
 def SReg_32 : RegisterClass<"AMDGPU", [f32, i32], 32,
-  (add SGPR_32, M0Reg, VCC_LO)
+  (add SGPR_32, M0Reg, VCC_LO, VCC_HI, EXEC_LO, EXEC_HI, FLAT_SCR_LO, FLAT_SCR_HI)
 >;
 
 def SGPR_64 : RegisterClass<"AMDGPU", [v2i32, i64], 64, (add SGPR_64Regs)>;
 
 def SReg_64 : RegisterClass<"AMDGPU", [v2i32, i64, i1], 64,
-  (add SGPR_64Regs, VCCReg, EXECReg)
+  (add SGPR_64, VCCReg, EXECReg, FLAT_SCR)
 >;
 
-def SReg_128 : RegisterClass<"AMDGPU", [v4i32], 128, (add SGPR_128)>;
+def SReg_128 : RegisterClass<"AMDGPU", [v4i32, v16i8], 128, (add SGPR_128)>;
 
 def SReg_256 : RegisterClass<"AMDGPU", [v32i8, v8i32, v8f32], 256, (add SGPR_256)>;
 

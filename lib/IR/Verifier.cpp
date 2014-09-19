@@ -107,6 +107,12 @@ struct VerifierSupport {
     OS << ' ' << *T;
   }
 
+  void WriteComdat(const Comdat *C) {
+    if (!C)
+      return;
+    OS << *C;
+  }
+
   // CheckFailed - A check failed, so print out the condition and the message
   // that failed.  This provides a nice place to put a breakpoint if you want
   // to see why something is not correct.
@@ -136,6 +142,12 @@ struct VerifierSupport {
     WriteType(T1);
     WriteType(T2);
     WriteType(T3);
+    Broken = true;
+  }
+
+  void CheckFailed(const Twine &Message, const Comdat *C) {
+    OS << Message.str() << "\n";
+    WriteComdat(C);
     Broken = true;
   }
 };
@@ -230,6 +242,9 @@ public:
          I != E; ++I)
       visitNamedMDNode(*I);
 
+    for (const StringMapEntry<Comdat> &SMEC : M.getComdatSymbolTable())
+      visitComdat(SMEC.getValue());
+
     visitModuleFlags(M);
     visitModuleIdents(M);
 
@@ -242,10 +257,11 @@ private:
   void visitGlobalVariable(const GlobalVariable &GV);
   void visitGlobalAlias(const GlobalAlias &GA);
   void visitAliaseeSubExpr(const GlobalAlias &A, const Constant &C);
-  void visitAliaseeSubExpr(SmallPtrSet<const GlobalAlias *, 4> &Visited,
+  void visitAliaseeSubExpr(SmallPtrSetImpl<const GlobalAlias *> &Visited,
                            const GlobalAlias &A, const Constant &C);
   void visitNamedMDNode(const NamedMDNode &NMD);
   void visitMDNode(MDNode &MD, Function *F);
+  void visitComdat(const Comdat &C);
   void visitModuleIdents(const Module &M);
   void visitModuleFlags(const Module &M);
   void visitModuleFlag(const MDNode *Op,
@@ -364,6 +380,8 @@ void Verifier::visitGlobalValue(const GlobalValue &GV) {
           "Global is external, but doesn't have external or weak linkage!",
           &GV);
 
+  Assert1(GV.getAlignment() <= Value::MaximumAlignment,
+          "huge alignment values are unsupported", &GV);
   Assert1(!GV.hasAppendingLinkage() || isa<GlobalVariable>(GV),
           "Only global variables can have appending linkage!", &GV);
 
@@ -387,6 +405,7 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
               "'common' global must have a zero initializer!", &GV);
       Assert1(!GV.isConstant(), "'common' global may not be marked constant!",
               &GV);
+      Assert1(!GV.hasComdat(), "'common' global may not be in a Comdat!", &GV);
     }
   } else {
     Assert1(GV.hasExternalLinkage() || GV.hasExternalWeakLinkage(),
@@ -483,7 +502,7 @@ void Verifier::visitAliaseeSubExpr(const GlobalAlias &GA, const Constant &C) {
   visitAliaseeSubExpr(Visited, GA, C);
 }
 
-void Verifier::visitAliaseeSubExpr(SmallPtrSet<const GlobalAlias *, 4> &Visited,
+void Verifier::visitAliaseeSubExpr(SmallPtrSetImpl<const GlobalAlias*> &Visited,
                                    const GlobalAlias &GA, const Constant &C) {
   if (const auto *GV = dyn_cast<GlobalValue>(&C)) {
     Assert1(!GV->isDeclaration(), "Alias must point to a definition", &GA);
@@ -516,7 +535,9 @@ void Verifier::visitGlobalAlias(const GlobalAlias &GA) {
   Assert1(!GA.getName().empty(),
           "Alias name cannot be empty!", &GA);
   Assert1(GlobalAlias::isValidLinkage(GA.getLinkage()),
-          "Alias should have external or external weak linkage!", &GA);
+          "Alias should have private, internal, linkonce, weak, linkonce_odr, "
+          "weak_odr, or external linkage!",
+          &GA);
   const Constant *Aliasee = GA.getAliasee();
   Assert1(Aliasee, "Aliasee cannot be NULL!", &GA);
   Assert1(GA.getType() == Aliasee->getType(),
@@ -578,6 +599,21 @@ void Verifier::visitMDNode(MDNode &MD, Function *F) {
   }
 }
 
+void Verifier::visitComdat(const Comdat &C) {
+  // All Comdat::SelectionKind values other than Comdat::Any require a
+  // GlobalValue with the same name as the Comdat.
+  const GlobalValue *GV = M->getNamedValue(C.getName());
+  if (C.getSelectionKind() != Comdat::Any)
+    Assert1(GV,
+            "comdat selection kind requires a global value with the same name",
+            &C);
+  // The Module is invalid if the GlobalValue has private linkage.  Entities
+  // with private linkage don't have entries in the symbol table.
+  if (GV)
+    Assert1(!GV->hasPrivateLinkage(), "comdat global value has private linkage",
+            GV);
+}
+
 void Verifier::visitModuleIdents(const Module &M) {
   const NamedMDNode *Idents = M.getNamedMetadata("llvm.ident");
   if (!Idents) 
@@ -637,24 +673,23 @@ Verifier::visitModuleFlag(const MDNode *Op,
   // constant int), the flag ID (an MDString), and the value.
   Assert1(Op->getNumOperands() == 3,
           "incorrect number of operands in module flag", Op);
-  ConstantInt *Behavior = dyn_cast<ConstantInt>(Op->getOperand(0));
+  Module::ModFlagBehavior MFB;
+  if (!Module::isValidModFlagBehavior(Op->getOperand(0), MFB)) {
+    Assert1(
+        dyn_cast<ConstantInt>(Op->getOperand(0)),
+        "invalid behavior operand in module flag (expected constant integer)",
+        Op->getOperand(0));
+    Assert1(false,
+            "invalid behavior operand in module flag (unexpected constant)",
+            Op->getOperand(0));
+  }
   MDString *ID = dyn_cast<MDString>(Op->getOperand(1));
-  Assert1(Behavior,
-          "invalid behavior operand in module flag (expected constant integer)",
-          Op->getOperand(0));
-  unsigned BehaviorValue = Behavior->getZExtValue();
   Assert1(ID,
           "invalid ID operand in module flag (expected metadata string)",
           Op->getOperand(1));
 
   // Sanity check the values for behaviors with additional requirements.
-  switch (BehaviorValue) {
-  default:
-    Assert1(false,
-            "invalid behavior operand in module flag (unexpected constant)",
-            Op->getOperand(0));
-    break;
-
+  switch (MFB) {
   case Module::Error:
   case Module::Warning:
   case Module::Override:
@@ -690,7 +725,7 @@ Verifier::visitModuleFlag(const MDNode *Op,
   }
 
   // Unless this is a "requires" flag, check the ID is unique.
-  if (BehaviorValue != Module::Require) {
+  if (MFB != Module::Require) {
     bool Inserted = SeenIDs.insert(std::make_pair(ID, Op)).second;
     Assert1(Inserted,
             "module flag identifiers must be unique (or of 'require' type)",
@@ -1019,20 +1054,19 @@ void Verifier::visitFunction(const Function &F) {
           "Attribute 'builtin' can only be applied to a callsite.", &F);
 
   // Check that this function meets the restrictions on this calling convention.
+  // Sometimes varargs is used for perfectly forwarding thunks, so some of these
+  // restrictions can be lifted.
   switch (F.getCallingConv()) {
   default:
-    break;
   case CallingConv::C:
     break;
   case CallingConv::Fast:
   case CallingConv::Cold:
-  case CallingConv::X86_FastCall:
-  case CallingConv::X86_ThisCall:
   case CallingConv::Intel_OCL_BI:
   case CallingConv::PTX_Kernel:
   case CallingConv::PTX_Device:
-    Assert1(!F.isVarArg(),
-            "Varargs functions must have C calling conventions!", &F);
+    Assert1(!F.isVarArg(), "Calling convention does not support varargs or "
+                           "perfect forwarding!", &F);
     break;
   }
 
@@ -1857,6 +1891,8 @@ void Verifier::visitLoadInst(LoadInst &LI) {
   Type *ElTy = PTy->getElementType();
   Assert2(ElTy == LI.getType(),
           "Load result type does not match pointer operand type!", &LI, ElTy);
+  Assert1(LI.getAlignment() <= Value::MaximumAlignment,
+          "huge alignment values are unsupported", &LI);
   if (LI.isAtomic()) {
     Assert1(LI.getOrdering() != Release && LI.getOrdering() != AcquireRelease,
             "Load cannot have Release ordering", &LI);
@@ -1932,6 +1968,8 @@ void Verifier::visitStoreInst(StoreInst &SI) {
   Assert2(ElTy == SI.getOperand(0)->getType(),
           "Stored value type does not match pointer operand type!",
           &SI, ElTy);
+  Assert1(SI.getAlignment() <= Value::MaximumAlignment,
+          "huge alignment values are unsupported", &SI);
   if (SI.isAtomic()) {
     Assert1(SI.getOrdering() != Acquire && SI.getOrdering() != AcquireRelease,
             "Store cannot have Acquire ordering", &SI);
@@ -1963,6 +2001,8 @@ void Verifier::visitAllocaInst(AllocaInst &AI) {
           &AI);
   Assert1(AI.getArraySize()->getType()->isIntegerTy(),
           "Alloca array size must have integer type", &AI);
+  Assert1(AI.getAlignment() <= Value::MaximumAlignment,
+          "huge alignment values are unsupported", &AI);
 
   visitInstruction(AI);
 }
@@ -2233,7 +2273,8 @@ void Verifier::visitInstruction(Instruction &I) {
   }
 
   MDNode *MD = I.getMetadata(LLVMContext::MD_range);
-  Assert1(!MD || isa<LoadInst>(I), "Ranges are only for loads!", &I);
+  Assert1(!MD || isa<LoadInst>(I) || isa<CallInst>(I) || isa<InvokeInst>(I),
+          "Ranges are only for loads, calls and invokes!", &I);
 
   InstsInThisBlock.insert(&I);
 }

@@ -40,6 +40,50 @@ void AMDGPUInstPrinter::printU32ImmOperand(const MCInst *MI, unsigned OpNo,
   O << formatHex(MI->getOperand(OpNo).getImm() & 0xffffffff);
 }
 
+void AMDGPUInstPrinter::printOffen(const MCInst *MI, unsigned OpNo,
+                                   raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm())
+    O << " offen";
+}
+
+void AMDGPUInstPrinter::printIdxen(const MCInst *MI, unsigned OpNo,
+                                   raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm())
+    O << " idxen";
+}
+
+void AMDGPUInstPrinter::printAddr64(const MCInst *MI, unsigned OpNo,
+                                    raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm())
+    O << " addr64";
+}
+
+void AMDGPUInstPrinter::printMBUFOffset(const MCInst *MI, unsigned OpNo,
+                                        raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm()) {
+    O << " offset:";
+    printU16ImmOperand(MI, OpNo, O);
+  }
+}
+
+void AMDGPUInstPrinter::printGLC(const MCInst *MI, unsigned OpNo,
+                                 raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm())
+    O << " glc";
+}
+
+void AMDGPUInstPrinter::printSLC(const MCInst *MI, unsigned OpNo,
+                                 raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm())
+    O << " slc";
+}
+
+void AMDGPUInstPrinter::printTFE(const MCInst *MI, unsigned OpNo,
+                                 raw_ostream &O) {
+  if (MI->getOperand(OpNo).getImm())
+    O << " tfe";
+}
+
 void AMDGPUInstPrinter::printRegOperand(unsigned reg, raw_ostream &O) {
   switch (reg) {
   case AMDGPU::VCC:
@@ -53,6 +97,27 @@ void AMDGPUInstPrinter::printRegOperand(unsigned reg, raw_ostream &O) {
     return;
   case AMDGPU::M0:
     O << "m0";
+    return;
+  case AMDGPU::FLAT_SCR:
+    O << "flat_scratch";
+    return;
+  case AMDGPU::VCC_LO:
+    O << "vcc_lo";
+    return;
+  case AMDGPU::VCC_HI:
+    O << "vcc_hi";
+    return;
+  case AMDGPU::EXEC_LO:
+    O << "exec_lo";
+    return;
+  case AMDGPU::EXEC_HI:
+    O << "exec_hi";
+    return;
+  case AMDGPU::FLAT_SCR_LO:
+    O << "flat_scratch_lo";
+    return;
+  case AMDGPU::FLAT_SCR_HI:
+    O << "flat_scratch_hi";
     return;
   default:
     break;
@@ -99,9 +164,9 @@ void AMDGPUInstPrinter::printRegOperand(unsigned reg, raw_ostream &O) {
     return;
   }
 
-  // The low 8 bits encoding value is the register index, for both VGPRs and
-  // SGPRs.
-  unsigned RegIdx = MRI.getEncodingValue(reg) & ((1 << 8)  - 1);
+  // The low 8 bits of the encoding value is the register index, for both VGPRs
+  // and SGPRs.
+  unsigned RegIdx = MRI.getEncodingValue(reg) & ((1 << 8) - 1);
   if (NumRegs == 1) {
     O << Type << RegIdx;
     return;
@@ -117,19 +182,27 @@ void AMDGPUInstPrinter::printImmediate(uint32_t Imm, raw_ostream &O) {
     return;
   }
 
-  if (Imm == FloatToBits(1.0f) ||
-      Imm == FloatToBits(-1.0f) ||
-      Imm == FloatToBits(0.5f) ||
-      Imm == FloatToBits(-0.5f) ||
-      Imm == FloatToBits(2.0f) ||
-      Imm == FloatToBits(-2.0f) ||
-      Imm == FloatToBits(4.0f) ||
-      Imm == FloatToBits(-4.0f)) {
-    O << BitsToFloat(Imm);
-    return;
+  if (Imm == FloatToBits(0.0f))
+    O << "0.0";
+  else if (Imm == FloatToBits(1.0f))
+    O << "1.0";
+  else if (Imm == FloatToBits(-1.0f))
+    O << "-1.0";
+  else if (Imm == FloatToBits(0.5f))
+    O << "0.5";
+  else if (Imm == FloatToBits(-0.5f))
+    O << "-0.5";
+  else if (Imm == FloatToBits(2.0f))
+    O << "2.0";
+  else if (Imm == FloatToBits(-2.0f))
+    O << "-2.0";
+  else if (Imm == FloatToBits(4.0f))
+    O << "4.0";
+  else if (Imm == FloatToBits(-4.0f))
+    O << "-4.0";
+  else {
+    O << formatHex(static_cast<uint64_t>(Imm));
   }
-
-  O << formatHex(static_cast<uint64_t>(Imm));
 }
 
 void AMDGPUInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
@@ -149,7 +222,12 @@ void AMDGPUInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   } else if (Op.isImm()) {
     printImmediate(Op.getImm(), O);
   } else if (Op.isFPImm()) {
-    O << Op.getFPImm();
+
+    // We special case 0.0 because otherwise it will be printed as an integer.
+    if (Op.getFPImm() == 0.0)
+      O << "0.0";
+    else
+      printImmediate(FloatToBits(Op.getFPImm()), O);
   } else if (Op.isExpr()) {
     const MCExpr *Exp = Op.getExpr();
     Exp->print(O);
@@ -216,13 +294,8 @@ void AMDGPUInstPrinter::printClamp(const MCInst *MI, unsigned OpNo,
 
 void AMDGPUInstPrinter::printLiteral(const MCInst *MI, unsigned OpNo,
                                      raw_ostream &O) {
-  union Literal {
-    float f;
-    int32_t i;
-  } L;
-
-  L.i = MI->getOperand(OpNo).getImm();
-  O << L.i << "(" << L.f << ")";
+  int32_t Imm = MI->getOperand(OpNo).getImm();
+  O << Imm << '(' << BitsToFloat(Imm) << ')';
 }
 
 void AMDGPUInstPrinter::printLast(const MCInst *MI, unsigned OpNo,

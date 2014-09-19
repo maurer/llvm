@@ -2,7 +2,7 @@ add_llvm_library(LLVMCodeGen
   AggressiveAntiDepBreaker.cpp
   AllocationOrder.cpp
   Analysis.cpp
-  AtomicExpandLoadLinkedPass.cpp
+  AtomicExpandPass.cpp
   BasicTargetTransformInfo.cpp
   BranchFolding.cpp
   CalcSpillWeights.cpp
@@ -27,7 +27,6 @@ add_llvm_library(LLVMCodeGen
   InlineSpiller.cpp
   InterferenceCache.cpp
   IntrinsicLowering.cpp
-  JITCodeEmitter.cpp
   JumpInstrTables.cpp
   LLVMTargetMachine.cpp
   LatencyPriorityQueue.cpp
@@ -49,8 +48,10 @@ add_llvm_library(LLVMCodeGen
   MachineBranchProbabilityInfo.cpp
   MachineCSE.cpp
   MachineCodeEmitter.cpp
+  MachineCombiner.cpp
   MachineCopyPropagation.cpp
   MachineDominators.cpp
+  MachineDominanceFrontier.cpp
   MachineFunction.cpp
   MachineFunctionAnalysis.cpp
   MachineFunctionPass.cpp
@@ -64,6 +65,7 @@ add_llvm_library(LLVMCodeGen
   MachinePassRegistry.cpp
   MachinePostDominators.cpp
   MachineRegisterInfo.cpp
+  MachineRegionInfo.cpp
   MachineSSAUpdater.cpp
   MachineScheduler.cpp
   MachineSink.cpp

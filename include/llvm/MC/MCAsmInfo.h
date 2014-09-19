@@ -31,19 +31,23 @@ class MCContext;
 
 namespace WinEH {
 enum class EncodingType {
-  ET_Invalid, /// Invalid
-  ET_Alpha,   /// Windows Alpha
-  ET_Alpha64, /// Windows AXP64
-  ET_ARM,     /// Windows NT (Windows on ARM)
-  ET_CE,      /// Windows CE ARM, PowerPC, SH3, SH4
-  ET_Itanium, /// Windows x64, Windows Itanium (IA-64)
-  ET_MIPS = ET_Alpha,
+  Invalid, /// Invalid
+  Alpha,   /// Windows Alpha
+  Alpha64, /// Windows AXP64
+  ARM,     /// Windows NT (Windows on ARM)
+  CE,      /// Windows CE ARM, PowerPC, SH3, SH4
+  Itanium, /// Windows x64, Windows Itanium (IA-64)
+  MIPS = Alpha,
 };
 }
 
-namespace ExceptionHandling {
-enum ExceptionsType { None, DwarfCFI, SjLj, ARM, Win64 };
-}
+enum class ExceptionHandling {
+  None,     /// No exception support
+  DwarfCFI, /// DWARF-like instruction based exceptions
+  SjLj,     /// setjmp/longjmp based exceptions
+  ARM,      /// ARM EHABI
+  WinEH,    /// Windows Exception Handling
+};
 
 namespace LCOMM {
 enum LCOMMType { NoAlignment, ByteAlignment, Log2Alignment };
@@ -83,7 +87,7 @@ protected:
   bool HasMachoTBSSDirective;
 
   /// True if the compiler should emit a ".reference .constructors_used" or
-  /// ".reference .destructors_used" directive after the a static ctor/dtor
+  /// ".reference .destructors_used" directive after the static ctor/dtor
   /// list.  This directive is only emitted in Static relocation model.  Default
   /// is false.
   bool HasStaticCtorDtorReferenceInStaticMode;
@@ -116,8 +120,8 @@ protected:
   /// This is appended to emitted labels.  Defaults to ":"
   const char *LabelSuffix;
 
-  /// This is appended to emitted labels.  Defaults to ":"
-  const char *DebugLabelSuffix;
+  // Print the EH begin symbol with an assignment. Defaults to false.
+  bool UseAssignmentForEHBegin;
 
   /// This prefix is used for globals like constant pool entries that are
   /// completely private to the .s file and should not have names in the .o
@@ -291,15 +295,12 @@ protected:
 
   //===--- Dwarf Emission Directives -----------------------------------===//
 
-  /// True if target asm supports leb128 directives.  Defaults to false.
-  bool HasLEB128;
-
   /// True if target supports emission of debugging information.  Defaults to
   /// false.
   bool SupportsDebugInformation;
 
   /// Exception handling format for the target.  Defaults to None.
-  ExceptionHandling::ExceptionsType ExceptionsType;
+  ExceptionHandling ExceptionsType;
 
   /// Windows exception handling data (.pdata) encoding.  Defaults to Invalid.
   WinEH::EncodingType WinEHEncodingType;
@@ -415,7 +416,7 @@ public:
   const char *getCommentString() const { return CommentString; }
   const char *getLabelSuffix() const { return LabelSuffix; }
 
-  const char *getDebugLabelSuffix() const { return DebugLabelSuffix; }
+  bool useAssignmentForEHBegin() const { return UseAssignmentForEHBegin; }
   const char *getPrivateGlobalPrefix() const { return PrivateGlobalPrefix; }
   bool hasLinkerPrivateGlobalPrefix() const {
     return LinkerPrivateGlobalPrefix[0] != '\0';
@@ -467,21 +468,17 @@ public:
   MCSymbolAttr getProtectedVisibilityAttr() const {
     return ProtectedVisibilityAttr;
   }
-  bool hasLEB128() const { return HasLEB128; }
   bool doesSupportDebugInformation() const { return SupportsDebugInformation; }
   bool doesSupportExceptionHandling() const {
     return ExceptionsType != ExceptionHandling::None;
   }
-  ExceptionHandling::ExceptionsType getExceptionHandlingType() const {
-    return ExceptionsType;
-  }
-  WinEH::EncodingType getWinEHEncodingType() const {
-    return WinEHEncodingType;
-  }
+  ExceptionHandling getExceptionHandlingType() const { return ExceptionsType; }
+  WinEH::EncodingType getWinEHEncodingType() const { return WinEHEncodingType; }
   bool isExceptionHandlingDwarf() const {
     return (ExceptionsType == ExceptionHandling::DwarfCFI ||
             ExceptionsType == ExceptionHandling::ARM ||
-            ExceptionsType == ExceptionHandling::Win64);
+            // Windows handler data still uses DWARF LSDA encoding.
+            ExceptionsType == ExceptionHandling::WinEH);
   }
   bool doesDwarfUseRelocationsAcrossSections() const {
     return DwarfUsesRelocationsAcrossSections;

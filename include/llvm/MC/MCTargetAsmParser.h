@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_MC_TARGETPARSER_H
-#define LLVM_MC_TARGETPARSER_H
+#ifndef LLVM_MC_MCTARGETASMPARSER_H
+#define LLVM_MC_MCTARGETASMPARSER_H
 
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
@@ -93,7 +93,7 @@ protected: // Can only create subclasses.
   MCTargetAsmParser();
 
   /// AvailableFeatures - The current set of available features.
-  unsigned AvailableFeatures;
+  uint64_t AvailableFeatures;
 
   /// ParsingInlineAsm - Are we parsing ms-style inline assembly?
   bool ParsingInlineAsm;
@@ -108,11 +108,13 @@ protected: // Can only create subclasses.
 public:
   virtual ~MCTargetAsmParser();
 
-  unsigned getAvailableFeatures() const { return AvailableFeatures; }
-  void setAvailableFeatures(unsigned Value) { AvailableFeatures = Value; }
+  uint64_t getAvailableFeatures() const { return AvailableFeatures; }
+  void setAvailableFeatures(uint64_t Value) { AvailableFeatures = Value; }
 
   bool isParsingInlineAsm () { return ParsingInlineAsm; }
   void setParsingInlineAsm (bool Value) { ParsingInlineAsm = Value; }
+
+  MCTargetOptions getTargetOptions() const { return MCOptions; }
 
   void setSemaCallback(MCAsmParserSemaCallback *Callback) {
     SemaCallback = Callback;
@@ -120,6 +122,9 @@ public:
 
   virtual bool ParseRegister(unsigned &RegNo, SMLoc &StartLoc,
                              SMLoc &EndLoc) = 0;
+
+  /// Sets frame register corresponding to the current MachineFunction.
+  virtual void SetFrameRegister(unsigned RegNo) {}
 
   /// ParseInstruction - Parse one assembly instruction.
   ///
@@ -161,8 +166,11 @@ public:
   /// explaining the match failure.
   virtual bool MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                        OperandVector &Operands, MCStreamer &Out,
-                                       unsigned &ErrorInfo,
+                                       uint64_t &ErrorInfo,
                                        bool MatchingInlineAsm) = 0;
+
+  /// Allows targets to let registers opt out of clobber lists.
+  virtual bool OmitRegisterFromClobberLists(unsigned RegNo) { return false; }
 
   /// Allow a target to add special case operand matching for things that
   /// tblgen doesn't/can't handle effectively. For example, literal

@@ -39,7 +39,7 @@
 //===----------------------------------------------------------------------===//
 //
 // TBD:
-//   FastLowerArguments: Handle simple cases.
+//   fastLowerArguments: Handle simple cases.
 //   PPCMaterializeGV: Handle TLS.
 //   SelectCall: Handle function pointers.
 //   SelectCall: Handle multi-register return values.
@@ -92,30 +92,29 @@ class PPCFastISel final : public FastISel {
   public:
     explicit PPCFastISel(FunctionLoweringInfo &FuncInfo,
                          const TargetLibraryInfo *LibInfo)
-    : FastISel(FuncInfo, LibInfo),
-      TM(FuncInfo.MF->getTarget()),
-      TII(*TM.getInstrInfo()),
-      TLI(*TM.getTargetLowering()),
-      PPCSubTarget(&TM.getSubtarget<PPCSubtarget>()),
-      Context(&FuncInfo.Fn->getContext()) { }
+        : FastISel(FuncInfo, LibInfo), TM(FuncInfo.MF->getTarget()),
+          TII(*TM.getSubtargetImpl()->getInstrInfo()),
+          TLI(*TM.getSubtargetImpl()->getTargetLowering()),
+          PPCSubTarget(&TM.getSubtarget<PPCSubtarget>()),
+          Context(&FuncInfo.Fn->getContext()) {}
 
   // Backend specific FastISel code.
   private:
-    bool TargetSelectInstruction(const Instruction *I) override;
-    unsigned TargetMaterializeConstant(const Constant *C) override;
-    unsigned TargetMaterializeAlloca(const AllocaInst *AI) override;
+    bool fastSelectInstruction(const Instruction *I) override;
+    unsigned fastMaterializeConstant(const Constant *C) override;
+    unsigned fastMaterializeAlloca(const AllocaInst *AI) override;
     bool tryToFoldLoadIntoMI(MachineInstr *MI, unsigned OpNo,
                              const LoadInst *LI) override;
-    bool FastLowerArguments() override;
-    unsigned FastEmit_i(MVT Ty, MVT RetTy, unsigned Opc, uint64_t Imm) override;
-    unsigned FastEmitInst_ri(unsigned MachineInstOpcode,
+    bool fastLowerArguments() override;
+    unsigned fastEmit_i(MVT Ty, MVT RetTy, unsigned Opc, uint64_t Imm) override;
+    unsigned fastEmitInst_ri(unsigned MachineInstOpcode,
                              const TargetRegisterClass *RC,
                              unsigned Op0, bool Op0IsKill,
                              uint64_t Imm);
-    unsigned FastEmitInst_r(unsigned MachineInstOpcode,
+    unsigned fastEmitInst_r(unsigned MachineInstOpcode,
                             const TargetRegisterClass *RC,
                             unsigned Op0, bool Op0IsKill);
-    unsigned FastEmitInst_rr(unsigned MachineInstOpcode,
+    unsigned fastEmitInst_rr(unsigned MachineInstOpcode,
                              const TargetRegisterClass *RC,
                              unsigned Op0, bool Op0IsKill,
                              unsigned Op1, bool Op1IsKill);
@@ -153,7 +152,7 @@ class PPCFastISel final : public FastISel {
                            unsigned DestReg, bool IsZExt);
     unsigned PPCMaterializeFP(const ConstantFP *CFP, MVT VT);
     unsigned PPCMaterializeGV(const GlobalValue *GV, MVT VT);
-    unsigned PPCMaterializeInt(const Constant *C, MVT VT);
+    unsigned PPCMaterializeInt(const Constant *C, MVT VT, bool UseSExt = true);
     unsigned PPCMaterialize32BitInt(int64_t Imm,
                                     const TargetRegisterClass *RC);
     unsigned PPCMaterialize64BitInt(int64_t Imm,
@@ -560,7 +559,7 @@ bool PPCFastISel::SelectLoad(const Instruction *I) {
   unsigned ResultReg = 0;
   if (!PPCEmitLoad(VT, ResultReg, Addr, RC))
     return false;
-  UpdateValueMap(I, ResultReg);
+  updateValueMap(I, ResultReg);
   return true;
 }
 
@@ -707,7 +706,7 @@ bool PPCFastISel::SelectBranch(const Instruction *I) {
 
     BuildMI(*BrBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::BCC))
       .addImm(PPCPred).addReg(CondReg).addMBB(TBB);
-    FastEmitBranch(FBB, DbgLoc);
+    fastEmitBranch(FBB, DbgLoc);
     FuncInfo.MBB->addSuccessor(TBB);
     return true;
 
@@ -715,7 +714,7 @@ bool PPCFastISel::SelectBranch(const Instruction *I) {
              dyn_cast<ConstantInt>(BI->getCondition())) {
     uint64_t Imm = CI->getZExtValue();
     MachineBasicBlock *Target = (Imm == 0) ? FBB : TBB;
-    FastEmitBranch(Target, DbgLoc);
+    fastEmitBranch(Target, DbgLoc);
     return true;
   }
 
@@ -838,7 +837,7 @@ bool PPCFastISel::SelectFPExt(const Instruction *I) {
     return false;
 
   // No code is generated for a FP extend.
-  UpdateValueMap(I, SrcReg);
+  updateValueMap(I, SrcReg);
   return true;
 }
 
@@ -860,7 +859,7 @@ bool PPCFastISel::SelectFPTrunc(const Instruction *I) {
   BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::FRSP), DestReg)
     .addReg(SrcReg);
 
-  UpdateValueMap(I, DestReg);
+  updateValueMap(I, DestReg);
   return true;
 }
 
@@ -979,7 +978,7 @@ bool PPCFastISel::SelectIToFP(const Instruction *I, bool IsSigned) {
   BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
     .addReg(FPReg);
 
-  UpdateValueMap(I, DestReg);
+  updateValueMap(I, DestReg);
   return true;
 }
 
@@ -1030,6 +1029,10 @@ bool PPCFastISel::SelectFPToI(const Instruction *I, bool IsSigned) {
   if (DstVT != MVT::i32 && DstVT != MVT::i64)
     return false;
 
+  // If we don't have FCTIDUZ and we need it, punt to SelectionDAG.
+  if (DstVT == MVT::i64 && !IsSigned && !PPCSubTarget->hasFPCVT())
+    return false;
+
   Value *Src = I->getOperand(0);
   Type *SrcTy = Src->getType();
   if (!isTypeLegal(SrcTy, SrcVT))
@@ -1076,7 +1079,7 @@ bool PPCFastISel::SelectFPToI(const Instruction *I, bool IsSigned) {
   if (IntReg == 0)
     return false;
 
-  UpdateValueMap(I, IntReg);
+  updateValueMap(I, IntReg);
   return true;
 }
 
@@ -1165,7 +1168,7 @@ bool PPCFastISel::SelectBinaryIntOp(const Instruction *I, unsigned ISDOpcode) {
                 ResultReg)
             .addReg(SrcReg1)
             .addImm(Imm);
-        UpdateValueMap(I, ResultReg);
+        updateValueMap(I, ResultReg);
         return true;
       }
     }
@@ -1181,7 +1184,7 @@ bool PPCFastISel::SelectBinaryIntOp(const Instruction *I, unsigned ISDOpcode) {
 
   BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), ResultReg)
     .addReg(SrcReg1).addReg(SrcReg2);
-  UpdateValueMap(I, ResultReg);
+  updateValueMap(I, ResultReg);
   return true;
 }
 
@@ -1196,7 +1199,14 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
                                   unsigned &NumBytes,
                                   bool IsVarArg) {
   SmallVector<CCValAssign, 16> ArgLocs;
-  CCState CCInfo(CC, IsVarArg, *FuncInfo.MF, TM, ArgLocs, *Context);
+  CCState CCInfo(CC, IsVarArg, *FuncInfo.MF, ArgLocs, *Context);
+
+  // Reserve space for the linkage area on the stack.
+  bool isELFv2ABI = PPCSubTarget->isELFv2ABI();
+  unsigned LinkageSize = PPCFrameLowering::getLinkageSize(true, false,
+                                                          isELFv2ABI);
+  CCInfo.AllocateStack(LinkageSize, 8);
+
   CCInfo.AnalyzeCallOperands(ArgVTs, ArgFlags, CC_PPC64_ELF_FIS);
 
   // Bail out if we can't handle any of the arguments.
@@ -1217,6 +1227,14 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
 
   // Get a count of how many bytes are to be pushed onto the stack.
   NumBytes = CCInfo.getNextStackOffset();
+
+  // The prolog code of the callee may store up to 8 GPR argument registers to
+  // the stack, allowing va_start to index over them in memory if its varargs.
+  // Because we cannot tell if this is needed on the caller side, we have to
+  // conservatively assume that it is needed.  As such, make sure we have at
+  // least enough stack space for the caller to store the 8 GPRs.
+  // FIXME: On ELFv2, it may be unnecessary to allocate the parameter area.
+  NumBytes = std::max(NumBytes, LinkageSize + 64);
 
   // Issue CALLSEQ_START.
   BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
@@ -1302,7 +1320,7 @@ void PPCFastISel::finishCall(MVT RetVT, SmallVectorImpl<unsigned> &UsedRegs,
   // any real difficulties there.
   if (RetVT != MVT::isVoid) {
     SmallVector<CCValAssign, 16> RVLocs;
-    CCState CCInfo(CC, IsVarArg, *FuncInfo.MF, TM, RVLocs, *Context);
+    CCState CCInfo(CC, IsVarArg, *FuncInfo.MF, RVLocs, *Context);
     CCInfo.AnalyzeCallResult(RetVT, RetCC_PPC64_ELF_FIS);
     CCValAssign &VA = RVLocs[0];
     assert(RVLocs.size() == 1 && "No support for multi-reg return values!");
@@ -1348,7 +1366,7 @@ void PPCFastISel::finishCall(MVT RetVT, SmallVectorImpl<unsigned> &UsedRegs,
 
     assert(ResultReg && "ResultReg unset!");
     UsedRegs.push_back(SourcePhysReg);
-    UpdateValueMap(I, ResultReg);
+    updateValueMap(I, ResultReg);
   }
 }
 
@@ -1392,7 +1410,7 @@ bool PPCFastISel::SelectCall(const Instruction *I) {
       RetVT != MVT::i32 && RetVT != MVT::i64 && RetVT != MVT::f32 &&
       RetVT != MVT::f64) {
     SmallVector<CCValAssign, 16> RVLocs;
-    CCState CCInfo(CC, IsVarArg, *FuncInfo.MF, TM, RVLocs, *Context);
+    CCState CCInfo(CC, IsVarArg, *FuncInfo.MF, RVLocs, *Context);
     CCInfo.AnalyzeCallResult(RetVT, RetCC_PPC64_ELF_FIS);
     if (RVLocs.size() > 1)
       return false;
@@ -1482,6 +1500,10 @@ bool PPCFastISel::SelectCall(const Instruction *I) {
   for (unsigned II = 0, IE = RegArgs.size(); II != IE; ++II)
     MIB.addReg(RegArgs[II], RegState::Implicit);
 
+  // Direct calls in the ELFv2 ABI need the TOC register live into the call.
+  if (PPCSubTarget->isELFv2ABI())
+    MIB.addReg(PPC::X2, RegState::Implicit);
+
   // Add a register mask with the call-preserved registers.  Proper
   // defs for return values will be added by setPhysRegsDeadExcept().
   MIB.addRegMask(TRI.getCallPreservedMask(CC));
@@ -1515,7 +1537,7 @@ bool PPCFastISel::SelectRet(const Instruction *I) {
 
     // Analyze operands of the call, assigning locations to each operand.
     SmallVector<CCValAssign, 16> ValLocs;
-    CCState CCInfo(CC, F.isVarArg(), *FuncInfo.MF, TM, ValLocs, *Context);
+    CCState CCInfo(CC, F.isVarArg(), *FuncInfo.MF, ValLocs, *Context);
     CCInfo.AnalyzeReturn(Outs, RetCC_PPC64_ELF_FIS);
     const Value *RV = Ret->getOperand(0);
     
@@ -1525,13 +1547,23 @@ bool PPCFastISel::SelectRet(const Instruction *I) {
 
     // Special case for returning a constant integer of any size.
     // Materialize the constant as an i64 and copy it to the return
-    // register.  This avoids an unnecessary extend or truncate.
+    // register. We still need to worry about properly extending the sign. E.g:
+    // If the constant has only one bit, it means it is a boolean. Therefore
+    // we can't use PPCMaterializeInt because it extends the sign which will
+    // cause negations of the returned value to be incorrect as they are
+    // implemented as the flip of the least significant bit.
     if (isa<ConstantInt>(*RV)) {
       const Constant *C = cast<Constant>(RV);
-      unsigned SrcReg = PPCMaterializeInt(C, MVT::i64);
-      unsigned RetReg = ValLocs[0].getLocReg();
+
+      CCValAssign &VA = ValLocs[0];
+
+      unsigned RetReg = VA.getLocReg();
+      unsigned SrcReg = PPCMaterializeInt(C, MVT::i64,
+                                          VA.getLocInfo() == CCValAssign::SExt);
+
       BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-              TII.get(TargetOpcode::COPY), RetReg).addReg(SrcReg);
+            TII.get(TargetOpcode::COPY), RetReg).addReg(SrcReg);
+
       RetRegs.push_back(RetReg);
 
     } else {
@@ -1698,7 +1730,7 @@ bool PPCFastISel::SelectTrunc(const Instruction *I) {
     SrcReg = ResultReg;
   }
 
-  UpdateValueMap(I, SrcReg);
+  updateValueMap(I, SrcReg);
   return true;
 }
 
@@ -1737,13 +1769,13 @@ bool PPCFastISel::SelectIntExt(const Instruction *I) {
   if (!PPCEmitIntExt(SrcVT, SrcReg, DestVT, ResultReg, IsZExt))
     return false;
 
-  UpdateValueMap(I, ResultReg);
+  updateValueMap(I, ResultReg);
   return true;
 }
 
 // Attempt to fast-select an instruction that wasn't handled by
 // the table-generated machinery.
-bool PPCFastISel::TargetSelectInstruction(const Instruction *I) {
+bool PPCFastISel::fastSelectInstruction(const Instruction *I) {
 
   switch (I->getOpcode()) {
     case Instruction::Load:
@@ -1991,7 +2023,8 @@ unsigned PPCFastISel::PPCMaterialize64BitInt(int64_t Imm,
 
 // Materialize an integer constant into a register, and return
 // the register number (or zero if we failed to handle it).
-unsigned PPCFastISel::PPCMaterializeInt(const Constant *C, MVT VT) {
+unsigned PPCFastISel::PPCMaterializeInt(const Constant *C, MVT VT,
+                                                           bool UseSExt) {
   // If we're using CR bit registers for i1 values, handle that as a special
   // case first.
   if (VT == MVT::i1 && PPCSubTarget->useCRBits()) {
@@ -2015,7 +2048,7 @@ unsigned PPCFastISel::PPCMaterializeInt(const Constant *C, MVT VT) {
     unsigned Opc = (VT == MVT::i64) ? PPC::LI8 : PPC::LI;
     unsigned ImmReg = createResultReg(RC);
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), ImmReg)
-      .addImm(CI->getSExtValue());
+      .addImm( (UseSExt) ? CI->getSExtValue() : CI->getZExtValue() );
     return ImmReg;
   }
 
@@ -2032,7 +2065,7 @@ unsigned PPCFastISel::PPCMaterializeInt(const Constant *C, MVT VT) {
 
 // Materialize a constant into a register, and return the register
 // number (or zero if we failed to handle it).
-unsigned PPCFastISel::TargetMaterializeConstant(const Constant *C) {
+unsigned PPCFastISel::fastMaterializeConstant(const Constant *C) {
   EVT CEVT = TLI.getValueType(C->getType(), true);
 
   // Only handle simple types.
@@ -2051,7 +2084,7 @@ unsigned PPCFastISel::TargetMaterializeConstant(const Constant *C) {
 
 // Materialize the address created by an alloca into a register, and
 // return the register number (or zero if we failed to handle it).
-unsigned PPCFastISel::TargetMaterializeAlloca(const AllocaInst *AI) {
+unsigned PPCFastISel::fastMaterializeAlloca(const AllocaInst *AI) {
   // Don't handle dynamic allocas.
   if (!FuncInfo.StaticAllocaMap.count(AI)) return 0;
 
@@ -2151,7 +2184,7 @@ bool PPCFastISel::tryToFoldLoadIntoMI(MachineInstr *MI, unsigned OpNo,
 
 // Attempt to lower call arguments in a faster way than done by
 // the selection DAG code.
-bool PPCFastISel::FastLowerArguments() {
+bool PPCFastISel::fastLowerArguments() {
   // Defer to normal argument lowering for now.  It's reasonably
   // efficient.  Consider doing something like ARM to handle the
   // case where all args fit in registers, no varargs, no float
@@ -2161,7 +2194,7 @@ bool PPCFastISel::FastLowerArguments() {
 
 // Handle materializing integer constants into a register.  This is not
 // automatically generated for PowerPC, so must be explicitly created here.
-unsigned PPCFastISel::FastEmit_i(MVT Ty, MVT VT, unsigned Opc, uint64_t Imm) {
+unsigned PPCFastISel::fastEmit_i(MVT Ty, MVT VT, unsigned Opc, uint64_t Imm) {
   
   if (Opc != ISD::Constant)
     return 0;
@@ -2198,7 +2231,7 @@ unsigned PPCFastISel::FastEmit_i(MVT Ty, MVT VT, unsigned Opc, uint64_t Imm) {
 // assigning R0 or X0 to the output register for GPRC and G8RC
 // register classes, as any such result could be used in ADDI, etc.,
 // where those regs have another meaning.
-unsigned PPCFastISel::FastEmitInst_ri(unsigned MachineInstOpcode,
+unsigned PPCFastISel::fastEmitInst_ri(unsigned MachineInstOpcode,
                                       const TargetRegisterClass *RC,
                                       unsigned Op0, bool Op0IsKill,
                                       uint64_t Imm) {
@@ -2211,27 +2244,27 @@ unsigned PPCFastISel::FastEmitInst_ri(unsigned MachineInstOpcode,
     (RC == &PPC::GPRCRegClass ? &PPC::GPRC_and_GPRC_NOR0RegClass :
      (RC == &PPC::G8RCRegClass ? &PPC::G8RC_and_G8RC_NOX0RegClass : RC));
 
-  return FastISel::FastEmitInst_ri(MachineInstOpcode, UseRC,
+  return FastISel::fastEmitInst_ri(MachineInstOpcode, UseRC,
                                    Op0, Op0IsKill, Imm);
 }
 
 // Override for instructions with one register operand to avoid use of
 // R0/X0.  The automatic infrastructure isn't aware of the context so
 // we must be conservative.
-unsigned PPCFastISel::FastEmitInst_r(unsigned MachineInstOpcode,
+unsigned PPCFastISel::fastEmitInst_r(unsigned MachineInstOpcode,
                                      const TargetRegisterClass* RC,
                                      unsigned Op0, bool Op0IsKill) {
   const TargetRegisterClass *UseRC =
     (RC == &PPC::GPRCRegClass ? &PPC::GPRC_and_GPRC_NOR0RegClass :
      (RC == &PPC::G8RCRegClass ? &PPC::G8RC_and_G8RC_NOX0RegClass : RC));
 
-  return FastISel::FastEmitInst_r(MachineInstOpcode, UseRC, Op0, Op0IsKill);
+  return FastISel::fastEmitInst_r(MachineInstOpcode, UseRC, Op0, Op0IsKill);
 }
 
 // Override for instructions with two register operands to avoid use
 // of R0/X0.  The automatic infrastructure isn't aware of the context
 // so we must be conservative.
-unsigned PPCFastISel::FastEmitInst_rr(unsigned MachineInstOpcode,
+unsigned PPCFastISel::fastEmitInst_rr(unsigned MachineInstOpcode,
                                       const TargetRegisterClass* RC,
                                       unsigned Op0, bool Op0IsKill,
                                       unsigned Op1, bool Op1IsKill) {
@@ -2239,7 +2272,7 @@ unsigned PPCFastISel::FastEmitInst_rr(unsigned MachineInstOpcode,
     (RC == &PPC::GPRCRegClass ? &PPC::GPRC_and_GPRC_NOR0RegClass :
      (RC == &PPC::G8RCRegClass ? &PPC::G8RC_and_G8RC_NOX0RegClass : RC));
 
-  return FastISel::FastEmitInst_rr(MachineInstOpcode, UseRC, Op0, Op0IsKill,
+  return FastISel::fastEmitInst_rr(MachineInstOpcode, UseRC, Op0, Op0IsKill,
                                    Op1, Op1IsKill);
 }
 

@@ -50,6 +50,22 @@ enum SynchronizationScope {
   CrossThread = 1
 };
 
+/// Returns true if the ordering is at least as strong as acquire
+/// (i.e. acquire, acq_rel or seq_cst)
+inline bool isAtLeastAcquire(AtomicOrdering Ord) {
+   return (Ord == Acquire ||
+    Ord == AcquireRelease ||
+    Ord == SequentiallyConsistent);
+}
+
+/// Returns true if the ordering is at least as strong as release
+/// (i.e. release, acq_rel or seq_cst)
+inline bool isAtLeastRelease(AtomicOrdering Ord) {
+return (Ord == Release ||
+    Ord == AcquireRelease ||
+    Ord == SequentiallyConsistent);
+}
+
 //===----------------------------------------------------------------------===//
 //                                AllocaInst Class
 //===----------------------------------------------------------------------===//
@@ -119,7 +135,7 @@ public:
     return getSubclassDataFromInstruction() & 32;
   }
 
-  /// \brief Specify whether this alloca is used to represent a the arguments to
+  /// \brief Specify whether this alloca is used to represent the arguments to
   /// a call.
   void setUsedWithInAlloca(bool V) {
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~32) |
@@ -225,7 +241,6 @@ public:
                                (xthread << 6));
   }
 
-  bool isAtomic() const { return getOrdering() != NotAtomic; }
   void setAtomic(AtomicOrdering Ordering,
                  SynchronizationScope SynchScope = CrossThread) {
     setOrdering(Ordering);
@@ -345,7 +360,6 @@ public:
                                (xthread << 6));
   }
 
-  bool isAtomic() const { return getOrdering() != NotAtomic; }
   void setAtomic(AtomicOrdering Ordering,
                  SynchronizationScope SynchScope = CrossThread) {
     setOrdering(Ordering);
@@ -1374,6 +1388,12 @@ public:
   /// \brief Extract the alignment for a call or parameter (0=unknown).
   unsigned getParamAlignment(unsigned i) const {
     return AttributeList.getParamAlignment(i);
+  }
+
+  /// \brief Extract the number of dereferenceable bytes for a call or
+  /// parameter (0=unknown).
+  uint64_t getDereferenceableBytes(unsigned i) const {
+    return AttributeList.getDereferenceableBytes(i);
   }
 
   /// \brief Return true if the call should not be treated as a call to a
@@ -2661,6 +2681,9 @@ public:
       assert(RHS.SI == SI && "Incompatible operators.");
       return RHS.Index != Index;
     }
+    Self &operator*() {
+      return *this;
+    }
   };
 
   typedef CaseIteratorT<const SwitchInst, const ConstantInt, const BasicBlock>
@@ -2741,6 +2764,17 @@ public:
   ConstCaseIt case_end() const {
     return ConstCaseIt(this, getNumCases());
   }
+
+  /// cases - iteration adapter for range-for loops.
+  iterator_range<CaseIt> cases() {
+    return iterator_range<CaseIt>(case_begin(), case_end());
+  }
+
+  /// cases - iteration adapter for range-for loops.
+  iterator_range<ConstCaseIt> cases() const {
+    return iterator_range<ConstCaseIt>(case_begin(), case_end());
+  }
+
   /// Returns an iterator that points to the default case.
   /// Note: this iterator allows to resolve successor only. Attempt
   /// to resolve case value causes an assertion.
@@ -3035,6 +3069,12 @@ public:
   /// \brief Extract the alignment for a call or parameter (0=unknown).
   unsigned getParamAlignment(unsigned i) const {
     return AttributeList.getParamAlignment(i);
+  }
+
+  /// \brief Extract the number of dereferenceable bytes for a call or
+  /// parameter (0=unknown).
+  uint64_t getDereferenceableBytes(unsigned i) const {
+    return AttributeList.getDereferenceableBytes(i);
   }
 
   /// \brief Return true if the call should not be treated as a call to a

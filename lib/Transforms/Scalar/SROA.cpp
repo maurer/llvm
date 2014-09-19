@@ -28,6 +28,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/AssumptionTracker.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/PtrUseVisitor.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -322,6 +323,15 @@ static Value *foldSelectInst(SelectInst &SI) {
     return SI.getOperand(1);
 
   return nullptr;
+}
+
+/// \brief A helper that folds a PHI node or a select.
+static Value *foldPHINodeOrSelectInst(Instruction &I) {
+  if (PHINode *PN = dyn_cast<PHINode>(&I)) {
+    // If PN merges together the same value, return that value.
+    return PN->hasConstantValue();
+  }
+  return foldSelectInst(cast<SelectInst>(I));
 }
 
 /// \brief Builder for the alloca slices.
@@ -646,57 +656,40 @@ private:
     return nullptr;
   }
 
-  void visitPHINode(PHINode &PN) {
-    if (PN.use_empty())
-      return markAsDead(PN);
-    if (!IsOffsetKnown)
-      return PI.setAborted(&PN);
+  void visitPHINodeOrSelectInst(Instruction &I) {
+    assert(isa<PHINode>(I) || isa<SelectInst>(I));
+    if (I.use_empty())
+      return markAsDead(I);
 
-    // See if we already have computed info on this node.
-    uint64_t &PHISize = PHIOrSelectSizes[&PN];
-    if (!PHISize) {
-      // This is a new PHI node, check for an unsafe use of the PHI node.
-      if (Instruction *UnsafeI = hasUnsafePHIOrSelectUse(&PN, PHISize))
-        return PI.setAborted(UnsafeI);
-    }
-
-    // For PHI and select operands outside the alloca, we can't nuke the entire
-    // phi or select -- the other side might still be relevant, so we special
-    // case them here and use a separate structure to track the operands
-    // themselves which should be replaced with undef.
-    // FIXME: This should instead be escaped in the event we're instrumenting
-    // for address sanitization.
-    if (Offset.uge(AllocSize)) {
-      S.DeadOperands.push_back(U);
-      return;
-    }
-
-    insertUse(PN, Offset, PHISize);
-  }
-
-  void visitSelectInst(SelectInst &SI) {
-    if (SI.use_empty())
-      return markAsDead(SI);
-    if (Value *Result = foldSelectInst(SI)) {
+    // TODO: We could use SimplifyInstruction here to fold PHINodes and
+    // SelectInsts. However, doing so requires to change the current
+    // dead-operand-tracking mechanism. For instance, suppose neither loading
+    // from %U nor %other traps. Then "load (select undef, %U, %other)" does not
+    // trap either.  However, if we simply replace %U with undef using the
+    // current dead-operand-tracking mechanism, "load (select undef, undef,
+    // %other)" may trap because the select may return the first operand
+    // "undef".
+    if (Value *Result = foldPHINodeOrSelectInst(I)) {
       if (Result == *U)
         // If the result of the constant fold will be the pointer, recurse
-        // through the select as if we had RAUW'ed it.
-        enqueueUsers(SI);
+        // through the PHI/select as if we had RAUW'ed it.
+        enqueueUsers(I);
       else
-        // Otherwise the operand to the select is dead, and we can replace it
-        // with undef.
+        // Otherwise the operand to the PHI/select is dead, and we can replace
+        // it with undef.
         S.DeadOperands.push_back(U);
 
       return;
     }
+
     if (!IsOffsetKnown)
-      return PI.setAborted(&SI);
+      return PI.setAborted(&I);
 
     // See if we already have computed info on this node.
-    uint64_t &SelectSize = PHIOrSelectSizes[&SI];
-    if (!SelectSize) {
-      // This is a new Select, check for an unsafe use of it.
-      if (Instruction *UnsafeI = hasUnsafePHIOrSelectUse(&SI, SelectSize))
+    uint64_t &Size = PHIOrSelectSizes[&I];
+    if (!Size) {
+      // This is a new PHI/Select, check for an unsafe use of it.
+      if (Instruction *UnsafeI = hasUnsafePHIOrSelectUse(&I, Size))
         return PI.setAborted(UnsafeI);
     }
 
@@ -711,7 +704,15 @@ private:
       return;
     }
 
-    insertUse(SI, Offset, SelectSize);
+    insertUse(I, Offset, Size);
+  }
+
+  void visitPHINode(PHINode &PN) {
+    visitPHINodeOrSelectInst(PN);
+  }
+
+  void visitSelectInst(SelectInst &SI) {
+    visitPHINodeOrSelectInst(SI);
   }
 
   /// \brief Disable SROA entirely if there are unhandled users of the alloca.
@@ -924,6 +925,7 @@ class SROA : public FunctionPass {
   LLVMContext *C;
   const DataLayout *DL;
   DominatorTree *DT;
+  AssumptionTracker *AT;
 
   /// \brief Worklist of alloca instructions to simplify.
   ///
@@ -990,7 +992,7 @@ private:
   bool splitAlloca(AllocaInst &AI, AllocaSlices &S);
   bool runOnAlloca(AllocaInst &AI);
   void clobberUse(Use &U);
-  void deleteDeadInstructions(SmallPtrSet<AllocaInst *, 4> &DeletedAllocas);
+  void deleteDeadInstructions(SmallPtrSetImpl<AllocaInst *> &DeletedAllocas);
   bool promoteAllocas(Function &F);
 };
 }
@@ -1003,6 +1005,7 @@ FunctionPass *llvm::createSROAPass(bool RequiresDomTree) {
 
 INITIALIZE_PASS_BEGIN(SROA, "sroa", "Scalar Replacement Of Aggregates",
                       false, false)
+INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_END(SROA, "sroa", "Scalar Replacement Of Aggregates",
                     false, false)
@@ -1130,7 +1133,7 @@ static bool isSafePHIToSpeculate(PHINode &PN,
     // If this pointer is always safe to load, or if we can prove that there
     // is already a load in the block, then we can move the load to the pred
     // block.
-    if (InVal->isDereferenceablePointer() ||
+    if (InVal->isDereferenceablePointer(DL) ||
         isSafeToLoadUnconditionally(InVal, TI, MaxAlign, DL))
       continue;
 
@@ -1148,10 +1151,12 @@ static void speculatePHINodeLoads(PHINode &PN) {
   PHINode *NewPN = PHIBuilder.CreatePHI(LoadTy, PN.getNumIncomingValues(),
                                         PN.getName() + ".sroa.speculated");
 
-  // Get the TBAA tag and alignment to use from one of the loads.  It doesn't
+  // Get the AA tags and alignment to use from one of the loads.  It doesn't
   // matter which one we get and if any differ.
   LoadInst *SomeLoad = cast<LoadInst>(PN.user_back());
-  MDNode *TBAATag = SomeLoad->getMetadata(LLVMContext::MD_tbaa);
+
+  AAMDNodes AATags;
+  SomeLoad->getAAMetadata(AATags);
   unsigned Align = SomeLoad->getAlignment();
 
   // Rewrite all loads of the PN to use the new PHI.
@@ -1172,8 +1177,8 @@ static void speculatePHINodeLoads(PHINode &PN) {
         InVal, (PN.getName() + ".sroa.speculate.load." + Pred->getName()));
     ++NumLoadsSpeculated;
     Load->setAlignment(Align);
-    if (TBAATag)
-      Load->setMetadata(LLVMContext::MD_tbaa, TBAATag);
+    if (AATags)
+      Load->setAAMetadata(AATags);
     NewPN->addIncoming(Load, Pred);
   }
 
@@ -1198,8 +1203,8 @@ static bool isSafeSelectToSpeculate(SelectInst &SI,
                                     const DataLayout *DL = nullptr) {
   Value *TValue = SI.getTrueValue();
   Value *FValue = SI.getFalseValue();
-  bool TDerefable = TValue->isDereferenceablePointer();
-  bool FDerefable = FValue->isDereferenceablePointer();
+  bool TDerefable = TValue->isDereferenceablePointer(DL);
+  bool FDerefable = FValue->isDereferenceablePointer(DL);
 
   for (User *U : SI.users()) {
     LoadInst *LI = dyn_cast<LoadInst>(U);
@@ -1238,12 +1243,15 @@ static void speculateSelectInstLoads(SelectInst &SI) {
         IRB.CreateLoad(FV, LI->getName() + ".sroa.speculate.load.false");
     NumLoadsSpeculated += 2;
 
-    // Transfer alignment and TBAA info if present.
+    // Transfer alignment and AA info if present.
     TL->setAlignment(LI->getAlignment());
     FL->setAlignment(LI->getAlignment());
-    if (MDNode *Tag = LI->getMetadata(LLVMContext::MD_tbaa)) {
-      TL->setMetadata(LLVMContext::MD_tbaa, Tag);
-      FL->setMetadata(LLVMContext::MD_tbaa, Tag);
+
+    AAMDNodes Tags;
+    LI->getAAMetadata(Tags);
+    if (Tags) {
+      TL->setAAMetadata(Tags);
+      FL->setAAMetadata(Tags);
     }
 
     Value *V = IRB.CreateSelect(SI.getCondition(), TL, FL,
@@ -1654,6 +1662,10 @@ static bool isVectorPromotionViableForSlice(
       return false;
     if (!I->isSplittable())
       return false; // Skip any unsplittable intrinsics.
+  } else if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(U->getUser())) {
+    if (II->getIntrinsicID() != Intrinsic::lifetime_start &&
+        II->getIntrinsicID() != Intrinsic::lifetime_end)
+      return false;
   } else if (U->get()->getType()->getPointerElementType()->isStructTy()) {
     // Disable vector promotion when there are loads or stores of an FCA.
     return false;
@@ -2413,6 +2425,7 @@ private:
     if (!VecTy && !IntTy &&
         (BeginOffset > NewAllocaBeginOffset ||
          EndOffset < NewAllocaEndOffset ||
+         SliceSize != DL.getTypeStoreSize(AllocaTy) ||
          !AllocaTy->isSingleValueType() ||
          !DL.isLegalInteger(DL.getTypeSizeInBits(ScalarTy)) ||
          DL.getTypeSizeInBits(ScalarTy)%8 != 0)) {
@@ -2535,10 +2548,11 @@ private:
 
     // If this doesn't map cleanly onto the alloca type, and that type isn't
     // a single value type, just emit a memcpy.
-    bool EmitMemCpy
-      = !VecTy && !IntTy && (BeginOffset > NewAllocaBeginOffset ||
-                             EndOffset < NewAllocaEndOffset ||
-                             !NewAI.getAllocatedType()->isSingleValueType());
+    bool EmitMemCpy =
+        !VecTy && !IntTy &&
+        (BeginOffset > NewAllocaBeginOffset || EndOffset < NewAllocaEndOffset ||
+         SliceSize != DL.getTypeStoreSize(NewAI.getAllocatedType()) ||
+         !NewAI.getAllocatedType()->isSingleValueType());
 
     // If we're just going to emit a memcpy, the alloca hasn't changed, and the
     // size hasn't been shrunk based on analysis of the viable range, this is
@@ -2697,7 +2711,10 @@ private:
     // the old pointer, which necessarily must be in the right position to
     // dominate the PHI.
     IRBuilderTy PtrBuilder(IRB);
-    PtrBuilder.SetInsertPoint(OldPtr);
+    if (isa<PHINode>(OldPtr))
+      PtrBuilder.SetInsertPoint(OldPtr->getParent()->getFirstInsertionPt());
+    else
+      PtrBuilder.SetInsertPoint(OldPtr);
     PtrBuilder.SetCurrentDebugLocation(OldPtr->getDebugLoc());
 
     Value *NewPtr = getNewAllocaSlicePtr(PtrBuilder, OldPtr->getType());
@@ -3490,7 +3507,7 @@ bool SROA::runOnAlloca(AllocaInst &AI) {
 ///
 /// We also record the alloca instructions deleted here so that they aren't
 /// subsequently handed to mem2reg to promote.
-void SROA::deleteDeadInstructions(SmallPtrSet<AllocaInst*, 4> &DeletedAllocas) {
+void SROA::deleteDeadInstructions(SmallPtrSetImpl<AllocaInst*> &DeletedAllocas) {
   while (!DeadInsts.empty()) {
     Instruction *I = DeadInsts.pop_back_val();
     DEBUG(dbgs() << "Deleting dead instruction: " << *I << "\n");
@@ -3515,7 +3532,7 @@ void SROA::deleteDeadInstructions(SmallPtrSet<AllocaInst*, 4> &DeletedAllocas) {
 
 static void enqueueUsersInWorklist(Instruction &I,
                                    SmallVectorImpl<Instruction *> &Worklist,
-                                   SmallPtrSet<Instruction *, 8> &Visited) {
+                                   SmallPtrSetImpl<Instruction *> &Visited) {
   for (User *U : I.users())
     if (Visited.insert(cast<Instruction>(U)))
       Worklist.push_back(cast<Instruction>(U));
@@ -3537,7 +3554,7 @@ bool SROA::promoteAllocas(Function &F) {
 
   if (DT && !ForceSSAUpdater) {
     DEBUG(dbgs() << "Promoting allocas with mem2reg...\n");
-    PromoteMemToReg(PromotableAllocas, *DT);
+    PromoteMemToReg(PromotableAllocas, *DT, nullptr, AT);
     PromotableAllocas.clear();
     return true;
   }
@@ -3619,6 +3636,7 @@ bool SROA::runOnFunction(Function &F) {
   DominatorTreeWrapperPass *DTWP =
       getAnalysisIfAvailable<DominatorTreeWrapperPass>();
   DT = DTWP ? &DTWP->getDomTree() : nullptr;
+  AT = &getAnalysis<AssumptionTracker>();
 
   BasicBlock &EntryBB = F.getEntryBlock();
   for (BasicBlock::iterator I = EntryBB.begin(), E = std::prev(EntryBB.end());
@@ -3662,6 +3680,7 @@ bool SROA::runOnFunction(Function &F) {
 }
 
 void SROA::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.addRequired<AssumptionTracker>();
   if (RequiresDomTree)
     AU.addRequired<DominatorTreeWrapperPass>();
   AU.setPreservesCFG();

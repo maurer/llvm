@@ -50,6 +50,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 #include <limits>
 #include <memory>
 #include <set>
@@ -88,8 +89,8 @@ public:
   static char ID;
 
   /// Construct a PBQP register allocator.
-  RegAllocPBQP(std::unique_ptr<PBQPBuilder> &b, char *cPassID=nullptr)
-      : MachineFunctionPass(ID), builder(b.release()), customPassID(cPassID) {
+  RegAllocPBQP(std::unique_ptr<PBQPBuilder> b, char *cPassID = nullptr)
+      : MachineFunctionPass(ID), builder(std::move(b)), customPassID(cPassID) {
     initializeSlotIndexesPass(*PassRegistry::getPassRegistry());
     initializeLiveIntervalsPass(*PassRegistry::getPassRegistry());
     initializeLiveStacksPass(*PassRegistry::getPassRegistry());
@@ -182,15 +183,15 @@ unsigned PBQPRAProblem::getPRegForOption(unsigned vreg, unsigned option) const {
   return allowedSet[option - 1];
 }
 
-PBQPRAProblem *PBQPBuilder::build(MachineFunction *mf, const LiveIntervals *lis,
-                                  const MachineBlockFrequencyInfo *mbfi,
-                                  const RegSet &vregs) {
+std::unique_ptr<PBQPRAProblem>
+PBQPBuilder::build(MachineFunction *mf, const LiveIntervals *lis,
+                   const MachineBlockFrequencyInfo *mbfi, const RegSet &vregs) {
 
   LiveIntervals *LIS = const_cast<LiveIntervals*>(lis);
   MachineRegisterInfo *mri = &mf->getRegInfo();
-  const TargetRegisterInfo *tri = mf->getTarget().getRegisterInfo();
+  const TargetRegisterInfo *tri = mf->getSubtarget().getRegisterInfo();
 
-  std::unique_ptr<PBQPRAProblem> p(new PBQPRAProblem());
+  auto p = llvm::make_unique<PBQPRAProblem>();
   PBQPRAGraph &g = p->getGraph();
   RegSet pregs;
 
@@ -279,7 +280,7 @@ PBQPRAProblem *PBQPBuilder::build(MachineFunction *mf, const LiveIntervals *lis,
     }
   }
 
-  return p.release();
+  return p;
 }
 
 void PBQPBuilder::addSpillCosts(PBQP::Vector &costVec,
@@ -308,16 +309,16 @@ void PBQPBuilder::addInterferenceCosts(
   }
 }
 
-PBQPRAProblem *PBQPBuilderWithCoalescing::build(MachineFunction *mf,
-                                                const LiveIntervals *lis,
-                                                const MachineBlockFrequencyInfo *mbfi,
-                                                const RegSet &vregs) {
+std::unique_ptr<PBQPRAProblem>
+PBQPBuilderWithCoalescing::build(MachineFunction *mf, const LiveIntervals *lis,
+                                 const MachineBlockFrequencyInfo *mbfi,
+                                 const RegSet &vregs) {
 
-  std::unique_ptr<PBQPRAProblem> p(PBQPBuilder::build(mf, lis, mbfi, vregs));
+  std::unique_ptr<PBQPRAProblem> p = PBQPBuilder::build(mf, lis, mbfi, vregs);
   PBQPRAGraph &g = p->getGraph();
 
   const TargetMachine &tm = mf->getTarget();
-  CoalescerPair cp(*tm.getRegisterInfo());
+  CoalescerPair cp(*tm.getSubtargetImpl()->getRegisterInfo());
 
   // Scan the machine function and add a coalescing cost whenever CoalescerPair
   // gives the Ok.
@@ -353,8 +354,8 @@ PBQPRAProblem *PBQPBuilderWithCoalescing::build(MachineFunction *mf,
         if (pregOpt < allowed.size()) {
           ++pregOpt; // +1 to account for spill option.
           PBQPRAGraph::NodeId node = p->getNodeForVReg(src);
-          llvm::dbgs() << "Reading node costs for node " << node << "\n";
-          llvm::dbgs() << "Source node: " << &g.getNodeCosts(node) << "\n";
+          DEBUG(llvm::dbgs() << "Reading node costs for node " << node << "\n");
+          DEBUG(llvm::dbgs() << "Source node: " << &g.getNodeCosts(node) << "\n");
           PBQP::Vector newCosts(g.getNodeCosts(node));
           addPhysRegCoalesce(newCosts, pregOpt, cBenefit);
           g.setNodeCosts(node, newCosts);
@@ -382,7 +383,7 @@ PBQPRAProblem *PBQPBuilderWithCoalescing::build(MachineFunction *mf,
     }
   }
 
-  return p.release();
+  return p;
 }
 
 void PBQPBuilderWithCoalescing::addPhysRegCoalesce(PBQP::Vector &costVec,
@@ -532,8 +533,8 @@ bool RegAllocPBQP::runOnMachineFunction(MachineFunction &MF) {
 
   mf = &MF;
   tm = &mf->getTarget();
-  tri = tm->getRegisterInfo();
-  tii = tm->getInstrInfo();
+  tri = tm->getSubtargetImpl()->getRegisterInfo();
+  tii = tm->getSubtargetImpl()->getInstrInfo();
   mri = &mf->getRegInfo();
 
   lis = &getAnalysis<LiveIntervals>();
@@ -578,16 +579,16 @@ bool RegAllocPBQP::runOnMachineFunction(MachineFunction &MF) {
     while (!pbqpAllocComplete) {
       DEBUG(dbgs() << "  PBQP Regalloc round " << round << ":\n");
 
-      std::unique_ptr<PBQPRAProblem> problem(
-          builder->build(mf, lis, mbfi, vregsToAlloc));
+      std::unique_ptr<PBQPRAProblem> problem =
+          builder->build(mf, lis, mbfi, vregsToAlloc);
 
 #ifndef NDEBUG
       if (pbqpDumpGraphs) {
         std::ostringstream rs;
         rs << round;
         std::string graphFileName(fqn + "." + rs.str() + ".pbqpgraph");
-        std::string tmp;
-        raw_fd_ostream os(graphFileName.c_str(), tmp, sys::fs::F_Text);
+        std::error_code EC;
+        raw_fd_ostream os(graphFileName, EC, sys::fs::F_Text);
         DEBUG(dbgs() << "Dumping graph for round " << round << " to \""
               << graphFileName << "\"\n");
         problem->getGraph().dump(os);
@@ -614,18 +615,18 @@ bool RegAllocPBQP::runOnMachineFunction(MachineFunction &MF) {
 }
 
 FunctionPass *
-llvm::createPBQPRegisterAllocator(std::unique_ptr<PBQPBuilder> &builder,
+llvm::createPBQPRegisterAllocator(std::unique_ptr<PBQPBuilder> builder,
                                   char *customPassID) {
-  return new RegAllocPBQP(builder, customPassID);
+  return new RegAllocPBQP(std::move(builder), customPassID);
 }
 
 FunctionPass* llvm::createDefaultPBQPRegisterAllocator() {
   std::unique_ptr<PBQPBuilder> Builder;
   if (pbqpCoalescing)
-    Builder.reset(new PBQPBuilderWithCoalescing());
+    Builder = llvm::make_unique<PBQPBuilderWithCoalescing>();
   else
-    Builder.reset(new PBQPBuilder());
-  return createPBQPRegisterAllocator(Builder);
+    Builder = llvm::make_unique<PBQPBuilder>();
+  return createPBQPRegisterAllocator(std::move(Builder));
 }
 
 #undef DEBUG_TYPE

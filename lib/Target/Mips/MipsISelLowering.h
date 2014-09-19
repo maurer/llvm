@@ -12,12 +12,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MipsISELLOWERING_H
-#define MipsISELLOWERING_H
+#ifndef LLVM_LIB_TARGET_MIPS_MIPSISELLOWERING_H
+#define LLVM_LIB_TARGET_MIPS_MIPSISELLOWERING_H
 
 #include "MCTargetDesc/MipsBaseInfo.h"
 #include "Mips.h"
-#include "MipsSubtarget.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/IR/Function.h"
@@ -210,13 +209,16 @@ namespace llvm {
   // TargetLowering Implementation
   //===--------------------------------------------------------------------===//
   class MipsFunctionInfo;
+  class MipsSubtarget;
 
   class MipsTargetLowering : public TargetLowering  {
     bool isMicroMips;
   public:
-    explicit MipsTargetLowering(MipsTargetMachine &TM);
+    explicit MipsTargetLowering(MipsTargetMachine &TM,
+                                const MipsSubtarget &STI);
 
-    static const MipsTargetLowering *create(MipsTargetMachine &TM);
+    static const MipsTargetLowering *create(MipsTargetMachine &TM,
+                                            const MipsSubtarget &STI);
 
     /// createFastISel - This method returns a target specific FastISel object,
     /// or null if the target does not support "fast" ISel.
@@ -353,9 +355,9 @@ namespace llvm {
         Mips16RetHelperConv, NoSpecialCallingConv
       };
 
-      MipsCC(CallingConv::ID CallConv, bool IsO32, bool IsFP64, CCState &Info,
+      MipsCC(CallingConv::ID CallConv, const MipsSubtarget &Subtarget,
+             CCState &Info,
              SpecialCallingConvType SpecialCallingConv = NoSpecialCallingConv);
-
 
       void analyzeCallOperands(const SmallVectorImpl<ISD::OutputArg> &Outs,
                                bool IsVarArg, bool IsSoftFloat,
@@ -365,30 +367,17 @@ namespace llvm {
                                   bool IsSoftFloat,
                                   Function::const_arg_iterator FuncArg);
 
-      void analyzeCallResult(const SmallVectorImpl<ISD::InputArg> &Ins,
-                             bool IsSoftFloat, const SDNode *CallNode,
-                             const Type *RetTy) const;
-
-      void analyzeReturn(const SmallVectorImpl<ISD::OutputArg> &Outs,
-                         bool IsSoftFloat, const Type *RetTy) const;
-
       const CCState &getCCInfo() const { return CCInfo; }
 
       /// hasByValArg - Returns true if function has byval arguments.
       bool hasByValArg() const { return !ByValArgs.empty(); }
-
-      /// regSize - Size (in number of bits) of integer registers.
-      unsigned regSize() const { return IsO32 ? 4 : 8; }
-
-      /// numIntArgRegs - Number of integer registers available for calls.
-      unsigned numIntArgRegs() const;
 
       /// reservedArgArea - The size of the area the caller reserves for
       /// register arguments. This is 16-byte if ABI is O32.
       unsigned reservedArgArea() const;
 
       /// Return pointer to array of integer argument registers.
-      const MCPhysReg *intArgRegs() const;
+      const ArrayRef<MCPhysReg> intArgRegs() const;
 
       typedef SmallVectorImpl<ByValArgInfo>::const_iterator byval_iterator;
       byval_iterator byval_begin() const { return ByValArgs.begin(); }
@@ -427,7 +416,7 @@ namespace llvm {
 
       CCState &CCInfo;
       CallingConv::ID CallConv;
-      bool IsO32, IsFP64;
+      const MipsSubtarget &Subtarget;
       SpecialCallingConvType SpecialCallingConv;
       SmallVector<ByValArgInfo, 2> ByValArgs;
     };
@@ -436,13 +425,7 @@ namespace llvm {
     SDValue lowerSTORE(SDValue Op, SelectionDAG &DAG) const;
 
     // Subtarget Info
-    const MipsSubtarget *Subtarget;
-
-    bool hasMips64() const { return Subtarget->hasMips64(); }
-    bool isGP64bit() const { return Subtarget->isGP64bit(); }
-    bool isO32() const { return Subtarget->isABI_O32(); }
-    bool isN32() const { return Subtarget->isABI_N32(); }
-    bool isN64() const { return Subtarget->isABI_N64(); }
+    const MipsSubtarget &Subtarget;
 
   private:
     // Create a TargetGlobalAddress node.
@@ -486,6 +469,7 @@ namespace llvm {
     SDValue lowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerSETCC(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerVASTART(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerVAARG(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFABS(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
@@ -566,7 +550,7 @@ namespace llvm {
     /// This function parses registers that appear in inline-asm constraints.
     /// It returns pair (0, 0) on failure.
     std::pair<unsigned, const TargetRegisterClass *>
-    parseRegForInlineAsmConstraint(const StringRef &C, MVT VT) const;
+    parseRegForInlineAsmConstraint(StringRef C, MVT VT) const;
 
     std::pair<unsigned, const TargetRegisterClass*>
               getRegForInlineAsmConstraint(const std::string &Constraint,
@@ -617,8 +601,10 @@ namespace llvm {
   };
 
   /// Create MipsTargetLowering objects.
-  const MipsTargetLowering *createMips16TargetLowering(MipsTargetMachine &TM);
-  const MipsTargetLowering *createMipsSETargetLowering(MipsTargetMachine &TM);
+  const MipsTargetLowering *
+  createMips16TargetLowering(MipsTargetMachine &TM, const MipsSubtarget &STI);
+  const MipsTargetLowering *
+  createMipsSETargetLowering(MipsTargetMachine &TM, const MipsSubtarget &STI);
 
   namespace Mips {
     FastISel *createFastISel(FunctionLoweringInfo &funcInfo,
@@ -626,4 +612,4 @@ namespace llvm {
   }
 }
 
-#endif // MipsISELLOWERING_H
+#endif
