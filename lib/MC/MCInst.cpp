@@ -111,7 +111,7 @@ void LLVMMCOperandProject(LLVMMCOperandRef OperandR, LLVMMCOperand* OperandC) {
     OperandC->Kind     = LLVMOTInst;
     OperandC->InstVal  = (LLVMMCInstRef)OperandCPP->getInst();
   } else {
-    assert((!OperandCPP.isValid()) && "Unknown Operand Type");
+    assert((!OperandCPP->isValid()) && "Unknown Operand Type");
     OperandC->Kind     = LLVMOTInvalid;
   }
 }
